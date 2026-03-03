@@ -1,0 +1,109 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Mini-SGLang",
+  "projectDescription": "A compact implementation of SGLang, designed to demystify the complexities of modern LLM serving systems.",
+  "theme": "aspen",
+  "primaryColor": "#3B82F6",
+  "lightColor": "#60A5FA",
+  "darkColor": "#1E40AF",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/radix-cache",
+              "concepts/chunked-prefill",
+              "concepts/overlap-scheduling",
+              "concepts/tensor-parallelism"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/online-serving",
+              "guides/interactive-shell",
+              "guides/distributed-serving",
+              "guides/docker-deployment",
+              "guides/supported-models"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/server-options",
+              "configuration/attention-backends",
+              "configuration/cuda-graph",
+              "configuration/cache-management"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/benchmarks",
+              "performance/optimization-tips"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API Endpoints",
+            "pages": [
+              "api/chat-completions",
+              "api/models"
+            ]
+          },
+          {
+            "group": "Python API",
+            "pages": [
+              "api/llm-class",
+              "api/sampling-params",
+              "api/engine"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "api/code-structure",
+              "api/components"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "High-performance LLM inference with state-of-the-art throughput",
+    "Radix Cache for KV cache reuse across requests",
+    "Chunked Prefill for reduced memory usage",
+    "Overlap Scheduling to hide CPU overhead",
+    "Tensor Parallelism for multi-GPU scaling",
+    "OpenAI-compatible API server",
+    "FlashAttention and FlashInfer integration",
+    "Interactive shell mode for testing"
+  ],
+  "publicApiSurface": [
+    "python -m minisgl --model <model_path>",
+    "LLM class for programmatic inference",
+    "/v1/chat/completions endpoint",
+    "/v1/models endpoint",
+    "SamplingParams configuration",
+    "Engine class for inference execution",
+    "Attention backends (fa, fi, trtllm)",
+    "Cache managers (radix, naive)"
+  ]
+}
