@@ -1,0 +1,78 @@
+---
+title: 'Generate'
+description: 'Simple text generation using the /generate endpoint'
+---
+
+## Endpoint
+
+```http
+POST /generate
+```
+
+The `/generate` endpoint provides a simplified text generation interface for quick testing and development. For production use, prefer the OpenAI-compatible `/v1/chat/completions` endpoint.
+
+## Request Body
+
+<ParamField path="prompt" type="string" required>
+  The input text prompt to generate from.
+</ParamField>
+
+<ParamField path="max_tokens" type="integer" required>
+  The maximum number of tokens to generate.
+</ParamField>
+
+<ParamField path="ignore_eos" type="boolean" default="false">
+  Whether to ignore the end-of-sequence token and continue generation.
+</ParamField>
+
+## Response Format
+
+The endpoint returns a streaming response using Server-Sent Events (SSE).
+
+Each event contains incremental text output:
+
+```
+data: Hello
+data:  world
+data: !
+data: [DONE]
+```
+
+The stream ends with a `data: [DONE]` message.
+
+## Example
+
+### Basic Generation
+
+```bash
+curl http://localhost:1919/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Once upon a time",
+    "max_tokens": 100,
+    "ignore_eos": false
+  }'
+```
+
+**Response:**
+
+```
+data: , there
+data:  was
+data:  a
+data:  young
+data:  princess
+data:  who
+...
+data: [DONE]
+```
+
+## Notes
+
+<Note>
+  The `/generate` endpoint is primarily for testing and debugging. For production applications, use the `/v1/chat/completions` endpoint which provides more features and OpenAI API compatibility.
+</Note>
+
+<Warning>
+  This endpoint does not support chat-style messages or advanced sampling parameters like `temperature` or `top_p`. Use `/v1/chat/completions` for full control over generation.
+</Warning>

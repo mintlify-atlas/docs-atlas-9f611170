@@ -76,7 +76,8 @@
             "group": "API Endpoints",
             "pages": [
               "api/chat-completions",
-              "api/models"
+              "api/models",
+              "api/generate"
             ]
           },
           {
