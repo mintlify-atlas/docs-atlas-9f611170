@@ -1,0 +1,225 @@
+---
+title: 'Chat Completions'
+description: 'Generate text completions using the /v1/chat/completions endpoint'
+---
+
+## Endpoint
+
+```
+POST /v1/chat/completions
+```
+
+The chat completions endpoint supports both chat-style messages and raw text prompts, compatible with the OpenAI API format.
+
+## Request Body
+
+<ParamField path="model" type="string" required>
+  The model ID to use for generation. You can retrieve available models from the `/v1/models` endpoint.
+</ParamField>
+
+<ParamField path="messages" type="array">
+  An array of message objects for chat-style completions. Each message has:
+  - `role` (string): One of "system", "user", or "assistant"
+  - `content` (string): The message content
+  
+  Either `messages` or `prompt` must be provided.
+</ParamField>
+
+<ParamField path="prompt" type="string">
+  A raw text prompt for completion. Either `messages` or `prompt` must be provided.
+</ParamField>
+
+<ParamField path="max_tokens" type="integer" default="16">
+  The maximum number of tokens to generate.
+</ParamField>
+
+<ParamField path="temperature" type="float" default="1.0">
+  Sampling temperature. Use 0.0 for greedy decoding.
+</ParamField>
+
+<ParamField path="top_k" type="integer" default="-1">
+  Top-k sampling parameter. -1 disables top-k filtering.
+</ParamField>
+
+<ParamField path="top_p" type="float" default="1.0">
+  Top-p (nucleus) sampling parameter.
+</ParamField>
+
+<ParamField path="n" type="integer" default="1">
+  Number of completions to generate (currently only n=1 is supported).
+</ParamField>
+
+<ParamField path="stream" type="boolean" default="false">
+  Whether to stream the response using Server-Sent Events (SSE).
+</ParamField>
+
+<ParamField path="stop" type="array" default="[]">
+  List of stop sequences (currently not implemented).
+</ParamField>
+
+<ParamField path="presence_penalty" type="float" default="0.0">
+  Presence penalty (currently not implemented).
+</ParamField>
+
+<ParamField path="frequency_penalty" type="float" default="0.0">
+  Frequency penalty (currently not implemented).
+</ParamField>
+
+<ParamField path="ignore_eos" type="boolean" default="false">
+  Whether to ignore the end-of-sequence token and continue generation.
+</ParamField>
+
+## Response Format
+
+### Streaming Response
+
+When `stream=true`, the endpoint returns Server-Sent Events (SSE) with the following format:
+
+<ResponseField name="id" type="string">
+  Unique completion ID (format: `cmpl-{uid}`).
+</ResponseField>
+
+<ResponseField name="object" type="string">
+  Always "text_completion.chunk" for streaming responses.
+</ResponseField>
+
+<ResponseField name="choices" type="array">
+  Array of completion choices. Each choice contains:
+  - `delta` (object): Incremental content update
+    - `role` (string): "assistant" (only in first chunk)
+    - `content` (string): Generated text fragment
+  - `index` (integer): Choice index (always 0)
+  - `finish_reason` (string): null during generation, "stop" when complete
+</ResponseField>
+
+The stream ends with a `data: [DONE]` message.
+
+## Examples
+
+### Chat Completion with Messages
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "meta-llama/Llama-3.1-8B-Instruct",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "What is the capital of France?"}
+    ],
+    "max_tokens": 100,
+    "temperature": 0.7
+  }'
+```
+
+### Streaming Response
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "meta-llama/Llama-3.1-8B-Instruct",
+    "messages": [
+      {"role": "user", "content": "Write a haiku about programming."}
+    ],
+    "max_tokens": 50,
+    "stream": true
+  }'
+```
+
+Example streaming output:
+```
+data: {"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{"role":"assistant"},"index":0,"finish_reason":null}]}
+
+data: {"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{"content":"Code"},"index":0,"finish_reason":null}]}
+
+data: {"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{"content":" flows"},"index":0,"finish_reason":null}]}
+
+data: {"id":"cmpl-1","object":"text_completion.chunk","choices":[{"delta":{},"index":0,"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+### Using Python OpenAI Client
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="dummy"  # API key not required
+)
+
+# Non-streaming
+response = client.chat.completions.create(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Explain quantum computing in simple terms."}
+    ],
+    max_tokens=150,
+    temperature=0.7
+)
+
+print(response.choices[0].message.content)
+```
+
+### Streaming with Python OpenAI Client
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="dummy"
+)
+
+stream = client.chat.completions.create(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "Count to 10."}],
+    max_tokens=50,
+    stream=True
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+### Raw Prompt (Non-Chat)
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "meta-llama/Llama-3.1-8B-Instruct",
+    "prompt": "Once upon a time",
+    "max_tokens": 100,
+    "temperature": 0.8
+  }'
+```
+
+### Advanced Sampling Parameters
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
+
+response = client.chat.completions.create(
+    model="meta-llama/Llama-3.1-8B-Instruct",
+    messages=[{"role": "user", "content": "Generate creative text."}],
+    max_tokens=200,
+    temperature=0.9,
+    top_p=0.95,
+    top_k=50
+)
+```
+
+## Notes
+
+- The endpoint always returns streaming responses (Server-Sent Events format)
+- Non-streaming responses are not yet implemented
+- The `stop`, `presence_penalty`, and `frequency_penalty` parameters are accepted but not yet implemented
+- Greedy decoding is automatically used when `temperature=0.0` or `top_k=1`
+- Client disconnection triggers automatic request cancellation to free resources

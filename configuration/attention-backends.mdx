@@ -1,0 +1,208 @@
+---
+title: Attention Backends
+description: High-performance attention kernels for prefill and decode phases
+---
+
+Mini-SGLang integrates multiple high-performance attention backends to optimize inference across different GPU architectures and workload phases. You can choose different backends for prefill and decode phases to maximize efficiency.
+
+## Supported Backends
+
+Mini-SGLang supports three attention backends:
+
+- **`fa`** - FlashAttention ([github.com/Dao-AILab/flash-attention](https://github.com/Dao-AILab/flash-attention))
+- **`fi`** - FlashInfer ([github.com/flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer))
+- **`trtllm`** - TensorRT-LLM FMHA ([github.com/NVIDIA/TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM))
+
+## Configuration
+
+Use the `--attn` or `--attention-backend` flag to specify which backend(s) to use:
+
+```bash
+# Auto-select optimal backends for your GPU
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn auto
+
+# Use FlashAttention for both prefill and decode
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa
+
+# Use FlashAttention for prefill, FlashInfer for decode
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa,fi
+```
+
+### Hybrid Backend Configuration
+
+When you specify two backends separated by a comma, the first backend is used for **prefill** and the second for **decode**:
+
+```bash
+--attn <prefill_backend>,<decode_backend>
+```
+
+**Example:**
+```bash
+python -m minisgl --model "meta-llama/Llama-3-8B" --attn fa,fi
+```
+
+This configuration uses:
+- **FlashAttention** (`fa`) for the prefill phase
+- **FlashInfer** (`fi`) for the decode phase
+
+## Backend Details
+
+### FlashAttention (`fa`)
+
+FlashAttention provides highly optimized attention computation through IO-aware algorithms.
+
+**Key Features:**
+- Supports FlashAttention 3 on NVIDIA Hopper GPUs (SM100+)
+- Falls back to FlashAttention 3 on older architectures
+- Efficient memory usage through tiling
+- Requires `sgl-kernel` package
+
+**Implementation:** `minisgl.attention.fa.FlashAttentionBackend` (source:~/workspace/source/python/minisgl/attention/fa.py)
+
+**Installation:**
+```bash
+pip install sgl-kernel
+```
+
+If you encounter import errors, you may need to install system dependencies:
+```bash
+apt update && apt install libnuma1
+```
+
+### FlashInfer (`fi`)
+
+FlashInfer specializes in efficient decode-phase attention with optional tensor core usage.
+
+**Key Features:**
+- Optimized for decode phase with batched requests
+- Configurable tensor core usage based on GQA ratio
+- Currently only supports page size = 1
+- Uses FlashAttention 2 backend internally
+
+**Implementation:** `minisgl.attention.fi.FlashInferBackend` (source:~/workspace/source/python/minisgl/attention/fi.py)
+
+**Tensor Core Usage:**
+By default, tensor cores are enabled when GQA (num_qo_heads / num_kv_heads) >= 4. You can override this with the `FLASHINFER_USE_TENSOR_CORES` environment variable.
+
+```bash
+FLASHINFER_USE_TENSOR_CORES=1 python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fi
+```
+
+### TensorRT-LLM (`trtllm`)
+
+TensorRT-LLM FMHA backend provides optimized attention through NVIDIA's TensorRT-LLM library.
+
+**Key Features:**
+- Supports both prefill and decode phases
+- Integrates with TensorRT-LLM optimizations
+- **Page size constraint:** Only supports page sizes of 16, 32, or 64
+
+**Implementation:** `minisgl.attention.trtllm.TensorRTLLMBackend` (source:~/workspace/source/python/minisgl/attention/trtllm.py)
+
+<Warning>
+When using `trtllm` backend, the page size will be overridden if you specify a value other than 16, 32, or 64.
+</Warning>
+
+**Example:**
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn trtllm --page-size 16
+```
+
+## Default Backend Selection
+
+When you use `--attn auto` (the default), Mini-SGLang automatically selects optimal backends based on your GPU architecture:
+
+- **NVIDIA Hopper GPUs (SM100+):** FlashAttention 3 for prefill, FlashInfer for decode
+- **Other GPUs:** FlashAttention 3 for both prefill and decode
+
+The auto-selection considers:
+- GPU compute capability
+- Available installed kernels
+- Model configuration (GQA ratio, head dimensions)
+
+## Page Size Constraints
+
+Different attention backends have different page size requirements:
+
+| Backend | Page Size Support | Notes |
+|---------|------------------|-------|
+| `fa` (FlashAttention) | Any size | Recommended: 1 for flexibility |
+| `fi` (FlashInfer) | 1 only | Hardcoded constraint |
+| `trtllm` | 16, 32, 64 only | Will override user setting |
+
+Specify page size with the `--page-size` flag:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa --page-size 16
+```
+
+## Performance Recommendations
+
+### For High Throughput
+
+Use hybrid FlashAttention + FlashInfer configuration:
+
+```bash
+python -m minisgl \
+  --model "meta-llama/Llama-3-8B" \
+  --attn fa,fi \
+  --page-size 1 \
+  --max-running-requests 512
+```
+
+### For Long Context
+
+FlashAttention is optimized for long sequences:
+
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --attn fa \
+  --max-seq-len-override 32768
+```
+
+### For Low Latency
+
+FlashInfer with tensor cores for decode:
+
+```bash
+FLASHINFER_USE_TENSOR_CORES=1 python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --attn fi
+```
+
+## Source Code Reference
+
+All attention backends are implemented in `~/workspace/source/python/minisgl/attention/`:
+
+- **FlashAttention:** `fa.py:36` (`FlashAttentionBackend` class)
+- **FlashInfer:** `fi.py:80` (`FlashInferBackend` class)
+- **TensorRT-LLM:** `trtllm.py:35` (`TensorRTLLMBackend` class)
+- **Backend registry:** `__init__.py:19` (`SUPPORTED_ATTENTION_BACKENDS`)
+
+## Troubleshooting
+
+### Import Errors with FlashAttention
+
+If you see errors importing `sgl_kernel.flash_attn`, install system dependencies:
+
+```bash
+apt update && apt install libnuma1
+pip install sgl-kernel
+```
+
+### Page Size Conflicts
+
+If using FlashInfer (`fi`), ensure page size is set to 1:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fi --page-size 1
+```
+
+### TensorRT-LLM Page Size
+
+When using `trtllm`, use supported page sizes:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn trtllm --page-size 16
+```

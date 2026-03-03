@@ -1,0 +1,324 @@
+---
+title: 'Docker Deployment'
+description: 'Deploy Mini-SGLang in containerized environments'
+---
+
+Mini-SGLang provides official Docker support for easy deployment in containerized environments. This guide covers building images, running containers, and best practices for production deployments.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install Docker">
+    Follow the [official Docker installation guide](https://docs.docker.com/get-docker/) for your platform.
+  </Step>
+
+  <Step title="Install NVIDIA Container Toolkit">
+    Required for GPU access in containers:
+
+    ```bash
+    # Ubuntu/Debian
+    distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+    curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
+      sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+
+    sudo apt-get update
+    sudo apt-get install -y nvidia-container-toolkit
+    sudo systemctl restart docker
+    ```
+
+    Verify installation:
+
+    ```bash
+    docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+    ```
+  </Step>
+</Steps>
+
+## Building the Docker Image
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/sgl-project/mini-sglang.git
+    cd mini-sglang
+    ```
+  </Step>
+
+  <Step title="Build the image">
+    Build with default settings:
+
+    ```bash
+    docker build -t minisgl .
+    ```
+
+    Or customize build arguments:
+
+    ```bash
+    docker build -t minisgl \
+      --build-arg CUDA_VERSION=12.8.1 \
+      --build-arg PYTHON_VERSION=3.12 \
+      --build-arg UBUNTU_VERSION=24.04 \
+      .
+    ```
+  </Step>
+
+  <Step title="Verify the build">
+    Check that the image was created:
+
+    ```bash
+    docker images minisgl
+    ```
+
+    Expected output:
+    ```
+    REPOSITORY   TAG       IMAGE ID       CREATED         SIZE
+    minisgl      latest    abc123def456   2 minutes ago   8.5GB
+    ```
+  </Step>
+</Steps>
+
+## Running the Container
+
+### Basic Server Deployment
+
+Launch an API server with GPU access:
+
+```bash
+docker run --gpus all -p 1919:1919 \
+  minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+
+<Note>
+The `--host 0.0.0.0` flag is required for the server to be accessible outside the container.
+</Note>
+
+### Interactive Shell Mode
+
+Run in interactive shell mode:
+
+```bash
+docker run -it --gpus all \
+  minisgl --model Qwen/Qwen3-0.6B --shell
+```
+
+### Custom Port Mapping
+
+Map to a different host port:
+
+```bash
+docker run --gpus all -p 8000:1919 \
+  minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+
+Access at `http://localhost:8000`
+
+## Using Volume Mounts
+
+### Persistent Cache Directories
+
+Use Docker volumes to cache downloaded models and compiled kernels:
+
+```bash
+docker run --gpus all -p 1919:1919 \
+  -v huggingface_cache:/app/.cache/huggingface \
+  -v tvm_cache:/app/.cache/tvm-ffi \
+  -v flashinfer_cache:/app/.cache/flashinfer \
+  minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+
+<Tip>
+Using volume mounts significantly speeds up subsequent container starts by avoiding re-downloading models and re-compiling kernels.
+</Tip>
+
+### Using Host Directories
+
+Alternatively, mount specific host directories:
+
+```bash
+mkdir -p ~/.cache/minisgl/{huggingface,tvm-ffi,flashinfer}
+
+docker run --gpus all -p 1919:1919 \
+  -v ~/.cache/minisgl/huggingface:/app/.cache/huggingface \
+  -v ~/.cache/minisgl/tvm-ffi:/app/.cache/tvm-ffi \
+  -v ~/.cache/minisgl/flashinfer:/app/.cache/flashinfer \
+  minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+
+## Multi-GPU Deployment
+
+### All Available GPUs
+
+```bash
+docker run --gpus all -p 1919:1919 \
+  -v huggingface_cache:/app/.cache/huggingface \
+  minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --host 0.0.0.0
+```
+
+### Specific GPUs
+
+Select specific GPU devices:
+
+```bash
+docker run --gpus '"device=0,1,2,3"' -p 1919:1919 \
+  minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --host 0.0.0.0
+```
+
+## Production Deployment
+
+### Docker Compose
+
+Create a `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+
+services:
+  minisgl:
+    image: minisgl:latest
+    command: --model Qwen/Qwen3-0.6B --host 0.0.0.0
+    ports:
+      - "1919:1919"
+    volumes:
+      - huggingface_cache:/app/.cache/huggingface
+      - tvm_cache:/app/.cache/tvm-ffi
+      - flashinfer_cache:/app/.cache/flashinfer
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  huggingface_cache:
+  tvm_cache:
+  flashinfer_cache:
+```
+
+Launch with:
+
+```bash
+docker compose up -d
+```
+
+### Health Checks
+
+Add a health check to the Dockerfile or docker-compose.yml:
+
+```yaml
+services:
+  minisgl:
+    # ... other configuration ...
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1919/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+```
+
+### Resource Limits
+
+Set memory and CPU limits:
+
+```bash
+docker run --gpus all -p 1919:1919 \
+  --memory="32g" \
+  --cpus="8" \
+  -v huggingface_cache:/app/.cache/huggingface \
+  minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+
+## Environment Variables
+
+Pass environment variables to configure the container:
+
+```bash
+docker run --gpus all -p 1919:1919 \
+  -e CUDA_VISIBLE_DEVICES=0,1 \
+  -e HF_TOKEN=your_huggingface_token \
+  minisgl --model meta-llama/Llama-3.1-8B-Instruct --host 0.0.0.0
+```
+
+### Available Environment Variables
+
+<ParamField path="CUDA_VISIBLE_DEVICES" type="string">
+  Comma-separated GPU indices to use
+</ParamField>
+
+<ParamField path="HF_TOKEN" type="string">
+  HuggingFace authentication token for gated models
+</ParamField>
+
+<ParamField path="MINISGL_DISABLE_OVERLAP_SCHEDULING" type="boolean">
+  Set to `1` to disable overlap scheduling
+</ParamField>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="GPU Not Detected">
+    Verify NVIDIA Container Toolkit is installed:
+    
+    ```bash
+    docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+    ```
+    
+    If this fails, reinstall the NVIDIA Container Toolkit.
+  </Accordion>
+
+  <Accordion title="Permission Denied">
+    The container runs as a non-root user (UID 1001). Ensure mounted volumes have correct permissions:
+    
+    ```bash
+    sudo chown -R 1001:1001 ~/.cache/minisgl
+    ```
+  </Accordion>
+
+  <Accordion title="Out of Memory">
+    Increase Docker's memory limit:
+    
+    ```bash
+    # In Docker Desktop: Settings → Resources → Memory
+    # Or use --memory flag
+    docker run --gpus all --memory="64g" -p 1919:1919 minisgl --model ...
+    ```
+  </Accordion>
+
+  <Accordion title="Model Download Fails">
+    - Check network connectivity
+    - Try using `--model-source modelscope`
+    - For gated models, provide `HF_TOKEN` environment variable
+  </Accordion>
+</AccordionGroup>
+
+## Windows (WSL2) Deployment
+
+For Windows users with WSL2:
+
+<Steps>
+  <Step title="Install WSL2 and Docker Desktop">
+    - Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)
+    - Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend
+  </Step>
+
+  <Step title="Build and run in WSL2">
+    Open WSL2 terminal and follow the standard Linux instructions:
+
+    ```bash
+    docker build -t minisgl .
+    docker run --gpus all -p 1919:1919 minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+    ```
+  </Step>
+
+  <Step title="Access from Windows">
+    The server will be accessible at `http://localhost:1919` from Windows browsers and applications.
+  </Step>
+</Steps>
+
+<Tip>
+For production deployments with load balancing and orchestration, consider using Kubernetes with NVIDIA GPU Operator.
+</Tip>

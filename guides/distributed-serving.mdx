@@ -1,0 +1,213 @@
+---
+title: 'Distributed Serving'
+description: 'Scale inference across multiple GPUs with tensor parallelism'
+---
+
+Mini-SGLang supports distributed serving using Tensor Parallelism (TP) to split large models across multiple GPUs. This enables serving models that exceed single-GPU memory capacity and improves throughput for demanding workloads.
+
+## Overview
+
+Tensor Parallelism splits model layers across multiple GPUs, allowing:
+
+- **Large Model Serving**: Deploy models like Llama-3.1-70B that don't fit on a single GPU
+- **Increased Throughput**: Distribute computation across GPUs for better performance
+- **Efficient Memory Usage**: Utilize memory from multiple GPUs simultaneously
+
+## Requirements
+
+<AccordionGroup>
+  <Accordion title="Hardware Requirements">
+    - **Multiple GPUs**: 2, 4, or 8 GPUs (must be a power of 2)
+    - **NVLink**: GPUs should be connected via NVLink for optimal performance
+    - **VRAM**: Combined memory must accommodate the model and KV cache
+  </Accordion>
+
+  <Accordion title="Software Requirements">
+    - **CUDA Toolkit**: Version matching your driver (check with `nvidia-smi`)
+    - **NCCL**: Automatically included with PyTorch
+    - **Linux**: Required for CUDA kernel support
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+Tensor Parallelism requires GPUs to be connected via high-bandwidth interconnects like NVLink. Performance will be significantly degraded over PCIe connections.
+</Warning>
+
+## Launching with Tensor Parallelism
+
+<Steps>
+  <Step title="Verify GPU availability">
+    Check that all GPUs are visible:
+
+    ```bash
+    nvidia-smi --list-gpus
+    ```
+
+    Expected output:
+    ```
+    GPU 0: NVIDIA H100 (UUID: GPU-...)
+    GPU 1: NVIDIA H100 (UUID: GPU-...)
+    GPU 2: NVIDIA H100 (UUID: GPU-...)
+    GPU 3: NVIDIA H100 (UUID: GPU-...)
+    ```
+  </Step>
+
+  <Step title="Launch with --tp flag">
+    Specify the number of GPUs to use with `--tp`:
+
+    ```bash
+    python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+    ```
+
+    This will distribute the model across 4 GPUs.
+  </Step>
+
+  <Step title="Verify distributed initialization">
+    You should see logs indicating TP initialization:
+
+    ```
+    INFO: Initializing tensor parallelism with 4 GPUs
+    INFO: Rank 0/4 ready
+    INFO: Rank 1/4 ready
+    INFO: Rank 2/4 ready
+    INFO: Rank 3/4 ready
+    INFO: API server is ready to serve on 0.0.0.0:1919
+    ```
+  </Step>
+</Steps>
+
+## Configuration Examples
+
+### 2-GPU Setup (Llama-3.1-8B)
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-8B-Instruct" --tp 2
+```
+
+### 4-GPU Setup (Qwen-3-32B)
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4
+```
+
+### 8-GPU Setup (Llama-3.1-405B)
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-405B-Instruct" --tp 8
+```
+
+## Advanced Configuration
+
+### Custom Port
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --port 30000
+```
+
+### With Custom Cache Strategy
+
+<CodeGroup>
+
+```bash Radix Cache (Default)
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4
+```
+
+```bash Naive Cache
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4 --cache naive
+```
+
+</CodeGroup>
+
+### Attention Backend Selection
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --attn fa,fi
+```
+
+This uses FlashAttention for prefill and FlashInfer for decode.
+
+## Performance Tuning
+
+### Chunked Prefill
+
+Adjust the max prefill length for better memory efficiency:
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --max-prefill-length 2048
+```
+
+### CUDA Graph Optimization
+
+Set the maximum batch size for CUDA graph capture:
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --cuda-graph-max-bs 256
+```
+
+### Page Size Configuration
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --page-size 16
+```
+
+## Benchmark Example
+
+From the Mini-SGLang benchmarks, deploying Qwen3-32B on 4×H200 GPUs:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4
+```
+
+**Test Configuration:**
+- Hardware: 4×H200 GPU connected by NVLink
+- Model: Qwen3-32B
+- Dataset: Qwen trace (1000 requests)
+
+This configuration achieves state-of-the-art throughput for online serving workloads.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="NCCL Timeout Errors">
+    Increase NCCL timeout:
+    
+    ```bash
+    export NCCL_TIMEOUT=1800
+    python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+    ```
+  </Accordion>
+
+  <Accordion title="Out of Memory">
+    - Reduce `--max-prefill-length`
+    - Reduce `--cuda-graph-max-bs`
+    - Increase number of GPUs with `--tp`
+    - Use a smaller model variant
+  </Accordion>
+
+  <Accordion title="Slow Performance">
+    - Verify GPUs are connected via NVLink: `nvidia-smi topo -m`
+    - Check GPU utilization: `nvidia-smi dmon`
+    - Ensure no other processes are using the GPUs
+  </Accordion>
+
+  <Accordion title="Model Not Splitting">
+    Verify the TP degree matches your available GPUs:
+    
+    ```bash
+    # Should match the number of GPUs
+    nvidia-smi --query-gpu=count --format=csv,noheader
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Using with ModelScope
+
+For users with HuggingFace access issues:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4 --model-source modelscope
+```
+
+<Tip>
+For single-GPU deployments, see the [Online Serving](/guides/online-serving) guide.
+</Tip>

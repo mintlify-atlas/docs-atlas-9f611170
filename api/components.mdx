@@ -1,0 +1,297 @@
+---
+title: System Components
+description: Understanding Mini-SGLang's distributed architecture and data flow
+---
+
+Mini-SGLang is designed as a distributed system with multiple independent processes working together to handle LLM inference efficiently.
+
+## Architecture Overview
+
+The system consists of several key components that communicate via ZeroMQ (ZMQ) for control messages and NCCL for GPU tensor data:
+
+```
+User → API Server → Tokenizer → Scheduler (Rank 0) → Engine
+                                       ↓
+                                 Other Schedulers (TP)
+                                       ↓
+       ← API Server ← Detokenizer ← Scheduler (Rank 0)
+```
+
+![Process overview diagram](https://lmsys.org/images/blog/minisgl/design.drawio.png)
+
+## Core Components
+
+### API Server
+
+**Implementation:** `python/minisgl/server/api_server.py`
+
+The API Server is the entry point for user requests:
+
+- Provides OpenAI-compatible HTTP endpoints:
+  - `/v1/chat/completions` - Chat completion API
+  - `/v1/completions` - Text completion API
+- Built with FastAPI for async request handling
+- Receives text prompts from users
+- Returns streaming or non-streaming responses
+- Handles request routing to the tokenizer
+- Manages response streaming back to clients
+
+**Communication:**
+- Receives HTTP requests from users
+- Sends tokenization requests to Tokenizer via ZMQ
+- Receives generated text from Detokenizer via ZMQ
+
+### Tokenizer Worker
+
+**Implementation:** `python/minisgl/tokenizer/server.py`
+
+The Tokenizer Worker converts text to tokens:
+
+- Runs as an independent process
+- Loads the tokenizer model (from HuggingFace)
+- Converts input text strings into token IDs
+- Handles special tokens and chat templates
+- Forwards tokenized requests to Scheduler
+
+**Communication:**
+- Receives tokenization requests from API Server via ZMQ
+- Sends tokenized data to Scheduler (Rank 0) via ZMQ
+- Uses `TokenizeMsg` message type from `python/minisgl/message/tokenizer.py`
+
+### Detokenizer Worker
+
+**Implementation:** `python/minisgl/tokenizer/detokenize.py` and `python/minisgl/tokenizer/server.py`
+
+The Detokenizer Worker converts tokens back to text:
+
+- Runs within the tokenizer worker process
+- Receives token IDs from Scheduler
+- Converts tokens into human-readable text
+- Handles incremental decoding for streaming
+- Sends decoded text back to API Server
+
+**Communication:**
+- Receives token IDs from Scheduler (Rank 0) via ZMQ
+- Sends decoded text to API Server via ZMQ
+- Uses `DetokenizeMsg` message type from `python/minisgl/message/tokenizer.py`
+
+### Scheduler Worker
+
+**Implementation:** `python/minisgl/scheduler/scheduler.py`
+
+The Scheduler is the core orchestrator of inference:
+
+- **One scheduler per GPU** in multi-GPU (Tensor Parallel) setups
+- Each scheduler is called a **TP Rank**
+- Manages request queuing and batching
+- Allocates KV cache resources
+- Controls the inference engine on its GPU
+- Implements continuous batching for efficiency
+
+**Scheduler Rank 0 (Primary):**
+- Receives tokenized requests from Tokenizer
+- Broadcasts requests to all other scheduler ranks
+- Collects generated tokens from Engine
+- Sends tokens to Detokenizer
+- Handles abort and control messages
+
+**Other Scheduler Ranks:**
+- Receive broadcast requests from Rank 0
+- Run inference in parallel with Rank 0
+- Participate in tensor-parallel computation
+- Synchronize via NCCL for tensor operations
+
+**Key Responsibilities:**
+- Request table management (`python/minisgl/scheduler/table.py`)
+- Batch preparation for prefill and decode (`python/minisgl/scheduler/prefill.py`, `python/minisgl/scheduler/decode.py`)
+- KV cache allocation (`python/minisgl/scheduler/cache.py`)
+- Message I/O handling (`python/minisgl/scheduler/io.py`)
+
+**Communication:**
+- Rank 0 receives messages via ZMQ from Tokenizer
+- Rank 0 sends messages via ZMQ to Detokenizer
+- All ranks synchronize via NCCL (torch.distributed) for tensor data
+- Inter-scheduler communication for distributed inference
+
+### Engine
+
+**Implementation:** `python/minisgl/engine/engine.py`
+
+The Engine is the TP worker on a single GPU:
+
+- **One engine per GPU process**
+- Loads and manages the LLM model
+- Manages the inference context (`Context` from `python/minisgl/core.py`)
+- Controls KV cache pool
+- Selects and uses attention backend (FlashAttention, FlashInfer, TensorRT-LLM)
+- Implements CUDA graph capture for decode optimization
+- Performs actual model forward passes
+- Executes sampling to generate next tokens
+
+**Key Components:**
+- Model loading and weight sharding
+- Attention backend management (`python/minisgl/attention/`)
+- KV cache management (`python/minisgl/kvcache/`)
+- CUDA graph optimization (`python/minisgl/engine/graph.py`)
+- Token sampling (`python/minisgl/engine/sample.py`)
+
+**Communication:**
+- Controlled by local Scheduler via function calls (same process)
+- Participates in NCCL collectives for tensor-parallel operations
+
+## Communication Protocols
+
+### ZeroMQ (ZMQ)
+
+**Purpose:** Control message passing between processes
+
+**Implementation:** `python/minisgl/utils/mp.py`
+
+Mini-SGLang uses ZMQ for lightweight inter-process communication:
+
+- **Push/Pull Queues:** Point-to-point request/response
+  - `ZmqPushQueue` - Send messages
+  - `ZmqPullQueue` - Receive messages
+  - `ZmqAsyncPushQueue`, `ZmqAsyncPullQueue` - Async variants
+
+- **Pub/Sub Queues:** Broadcast to multiple subscribers
+  - `ZmqPubQueue` - Publish messages
+  - `ZmqSubQueue` - Subscribe to messages
+
+**Message Flow:**
+```
+API Server ←→ Tokenizer ←→ Scheduler (Rank 0) ←→ Detokenizer
+```
+
+**Message Types:**
+- Defined in `python/minisgl/message/`
+- Support automatic serialization/deserialization
+- Type-safe message passing
+
+### NCCL (NVIDIA Collective Communications Library)
+
+**Purpose:** High-performance GPU-to-GPU tensor communication
+
+**Implementation:** `python/minisgl/distributed/impl.py`, `python/minisgl/kernel/pynccl.py`
+
+NCCL is used for tensor parallelism:
+
+- **All-Reduce:** Aggregate results across GPUs (e.g., after row-parallel linear layers)
+- **All-Gather:** Collect tensors from all GPUs
+- **Broadcast:** Send tensor from one GPU to all others
+
+**Usage:**
+- Synchronizes model weights across TP ranks
+- Combines partial results from parallel computations
+- Used by tensor-parallel layers in `python/minisgl/layers/`
+
+**DistributedCommunicator:**
+```python
+from minisgl.distributed import DistributedCommunicator
+
+# All-reduce operation
+result = DistributedCommunicator.all_reduce(tensor)
+
+# All-gather operation
+gathered = DistributedCommunicator.all_gather(tensor)
+```
+
+## Request Lifecycle
+
+Here's how a request flows through the system:
+
+### 1. User Request
+**User → API Server**
+- User sends HTTP POST to `/v1/chat/completions`
+- API Server validates request and extracts prompt
+
+### 2. Tokenization
+**API Server → Tokenizer**
+- API Server sends `TokenizeMsg` via ZMQ
+- Tokenizer converts text to token IDs
+
+### 3. Scheduling
+**Tokenizer → Scheduler (Rank 0)**
+- Tokenizer sends tokenized request via ZMQ
+- Scheduler creates `Req` object (`python/minisgl/core.py`)
+- Adds request to request table
+
+### 4. Broadcasting (Multi-GPU)
+**Scheduler (Rank 0) → All Schedulers**
+- Rank 0 broadcasts request to other ranks via NCCL
+- All schedulers synchronize request state
+
+### 5. Batch Preparation
+**All Schedulers**
+- Each scheduler prepares `Batch` object
+- Allocates KV cache pages
+- Creates attention metadata
+- Groups prefill and decode requests
+
+### 6. Inference
+**Scheduler → Engine**
+- Scheduler calls Engine.forward()
+- Engine performs model forward pass
+- Tensor-parallel layers use NCCL for synchronization
+- Attention backend computes attention
+- KV cache is updated
+- Token sampling generates next token
+
+### 7. Detokenization
+**Scheduler (Rank 0) → Detokenizer**
+- Rank 0 sends generated token ID via ZMQ
+- Detokenizer converts to text
+- Handles streaming decoding
+
+### 8. Response
+**Detokenizer → API Server → User**
+- Detokenizer sends text chunk via ZMQ
+- API Server streams to user via HTTP
+- Process repeats until EOS or max tokens
+
+## Multi-GPU Tensor Parallelism
+
+In tensor-parallel setups:
+
+1. **Model Sharding:**
+   - Model weights are split across GPUs
+   - Each GPU holds a portion of each layer
+   - Sharding handled by `python/minisgl/models/weight.py`
+
+2. **Parallel Computation:**
+   - All GPUs process the same batch simultaneously
+   - Column-parallel layers split output features
+   - Row-parallel layers split input features
+   - Implemented in `python/minisgl/layers/linear.py`
+
+3. **Synchronization:**
+   - NCCL all-reduce after row-parallel layers
+   - Fast GPU-to-GPU communication
+   - Minimal overhead for tensor operations
+
+4. **Coordinator Pattern:**
+   - Rank 0 scheduler coordinates I/O
+   - All ranks execute inference in lockstep
+   - Results collected at Rank 0
+
+## Process Launching
+
+**Implementation:** `python/minisgl/server/launch.py`
+
+The `launch_server` function orchestrates all processes:
+
+1. Spawns API Server process
+2. Spawns Tokenizer/Detokenizer process
+3. Spawns Scheduler processes (one per GPU)
+4. Each Scheduler creates its Engine
+5. Sets up ZMQ and NCCL communication
+6. Monitors process health
+
+**CLI Entry Point:** `python/minisgl/__main__.py`
+
+Users can start the entire system with:
+```bash
+python -m minisgl.server.launch_server --model-path <path> --tp-size <num_gpus>
+```
+
+This architecture enables Mini-SGLang to efficiently handle concurrent requests while maximizing GPU utilization through continuous batching and tensor parallelism.

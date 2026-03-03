@@ -1,0 +1,283 @@
+---
+title: Server Options
+description: Complete reference for all Mini-SGLang command-line arguments
+---
+
+Mini-SGLang provides comprehensive command-line options for configuring model serving, performance optimization, memory management, and networking. This page documents all available CLI arguments from `python -m minisgl`.
+
+## Model Configuration
+
+<ParamField path="--model-path" type="string" required>
+  Path to model weights. Can be a local folder or Hugging Face repo ID.
+  
+  **Alias:** `--model`
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B"
+  python -m minisgl --model-path "/local/path/to/model"
+  ```
+</ParamField>
+
+<ParamField path="--dtype" type="string" default="auto">
+  Data type for model weights and activations.
+  
+  **Choices:** `auto`, `float16`, `bfloat16`, `float32`
+  
+  `auto` will use FP16 for FP32/FP16 models and BF16 for BF16 models.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "meta-llama/Llama-3-8B" --dtype bfloat16
+  ```
+</ParamField>
+
+<ParamField path="--model-source" type="string" default="huggingface">
+  Source to download model from.
+  
+  **Choices:** `huggingface`, `modelscope`
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --model-source modelscope
+  ```
+</ParamField>
+
+## Performance Configuration
+
+<ParamField path="--tensor-parallel-size" type="int" default="1">
+  Tensor parallelism size for distributed serving across multiple GPUs.
+  
+  **Alias:** `--tp-size`
+  
+  **Example:**
+  ```bash
+  # Run on 4 GPUs
+  python -m minisgl --model "meta-llama/Llama-3-70B" --tp-size 4
+  ```
+</ParamField>
+
+<ParamField path="--max-running-requests" type="int" default="256">
+  Maximum number of concurrent running requests.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --max-running-requests 128
+  ```
+</ParamField>
+
+<ParamField path="--max-prefill-length" type="int" default="8192">
+  Maximum chunk size in tokens for chunked prefill. Controls the maximum number of tokens processed in a single prefill iteration.
+  
+  **Alias:** `--max-extend-length`
+  
+  Setting this to a very small value (e.g., 128) is not recommended as it may significantly degrade performance.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --max-prefill-length 4096
+  ```
+</ParamField>
+
+<ParamField path="--attention-backend" type="string" default="auto">
+  Attention backend to use. If two backends are specified (comma-separated), the first is used for prefill and the second for decode.
+  
+  **Alias:** `--attn`
+  
+  **Choices:** `auto`, `fa` (FlashAttention), `fi` (FlashInfer), `trtllm` (TensorRT-LLM)
+  
+  See [Attention Backends](/configuration/attention-backends) for detailed information.
+  
+  **Example:**
+  ```bash
+  # Use FlashAttention for prefill and FlashInfer for decode
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa,fi
+  
+  # Use same backend for both phases
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa
+  ```
+</ParamField>
+
+<ParamField path="--cuda-graph-max-bs" type="int" default="auto">
+  Maximum batch size for CUDA graph capture. Setting to 0 disables CUDA graph optimization. When not specified, the value is auto-tuned based on GPU memory.
+  
+  **Alias:** `--graph`
+  
+  See [CUDA Graph](/configuration/cuda-graph) for detailed information.
+  
+  **Example:**
+  ```bash
+  # Set maximum batch size to 32
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 32
+  
+  # Disable CUDA graph
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 0
+  ```
+</ParamField>
+
+<ParamField path="--moe-backend" type="string" default="auto">
+  MoE (Mixture of Experts) backend to use for MoE models.
+  
+  **Choices:** `auto`, and other supported MoE backends
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-MoE" --moe-backend auto
+  ```
+</ParamField>
+
+## Memory Configuration
+
+<ParamField path="--memory-ratio" type="float" default="0.9">
+  Fraction of GPU memory to use for KV cache. Value should be between 0 and 1.
+  
+  **Example:**
+  ```bash
+  # Use 85% of GPU memory for KV cache
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --memory-ratio 0.85
+  ```
+</ParamField>
+
+<ParamField path="--max-seq-len-override" type="int" default="null">
+  Override the maximum sequence length from model config.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --max-seq-len-override 32768
+  ```
+</ParamField>
+
+<ParamField path="--num-pages" type="int" default="null">
+  Set the maximum number of pages for KV cache. Overrides automatic calculation based on memory ratio.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --num-pages 10000
+  ```
+</ParamField>
+
+<ParamField path="--page-size" type="int" default="1">
+  Page size for KV cache management system. Some attention backends may override this value (e.g., TRT-LLM only supports 16, 32, or 64).
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --page-size 16
+  ```
+</ParamField>
+
+<ParamField path="--cache-type" type="string" default="radix">
+  KV cache management strategy.
+  
+  **Choices:** `radix`, `naive`
+  
+  Radix cache allows reuse of KV cache for shared prefixes across requests. See [Cache Management](/configuration/cache-management) for detailed information.
+  
+  **Example:**
+  ```bash
+  # Use naive cache (no prefix sharing)
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --cache-type naive
+  ```
+</ParamField>
+
+## Network Configuration
+
+<ParamField path="--host" type="string" default="127.0.0.1">
+  Host address for the server to bind to.
+  
+  **Example:**
+  ```bash
+  # Listen on all network interfaces
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --host 0.0.0.0
+  ```
+</ParamField>
+
+<ParamField path="--port" type="int" default="1919">
+  Port number for the server to listen on.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --port 8000
+  ```
+</ParamField>
+
+<ParamField path="--num-tokenizer" type="int" default="0">
+  Number of tokenizer processes to launch. 0 means the tokenizer is shared with the detokenizer.
+  
+  **Alias:** `--tokenizer-count`
+  
+  **Example:**
+  ```bash
+  # Launch 2 dedicated tokenizer processes
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --num-tokenizer 2
+  ```
+</ParamField>
+
+## Advanced Options
+
+<ParamField path="--disable-pynccl" type="boolean" default="false">
+  Disable PyNCCL for tensor parallelism. By default, PyNCCL is enabled.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "meta-llama/Llama-3-70B" --tp-size 4 --disable-pynccl
+  ```
+</ParamField>
+
+<ParamField path="--dummy-weight" type="boolean" default="false">
+  Use dummy weights for testing purposes instead of loading actual model weights.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --dummy-weight
+  ```
+</ParamField>
+
+<ParamField path="--shell-mode" type="boolean" default="false">
+  Run the server in interactive shell mode for demonstration and testing.
+  
+  When enabled, automatically sets `--cuda-graph-max-bs 1` and `--max-running-requests 1`.
+  
+  **Example:**
+  ```bash
+  python -m minisgl --model "Qwen/Qwen3-0.6B" --shell-mode
+  ```
+</ParamField>
+
+## Common Usage Examples
+
+### Basic serving
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+### High-throughput serving
+```bash
+python -m minisgl \
+  --model "meta-llama/Llama-3-8B" \
+  --max-running-requests 512 \
+  --memory-ratio 0.95 \
+  --attn fa,fi
+```
+
+### Multi-GPU serving
+```bash
+python -m minisgl \
+  --model "meta-llama/Llama-3-70B" \
+  --tp-size 8 \
+  --dtype bfloat16 \
+  --max-running-requests 256
+```
+
+### Long context serving
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --max-seq-len-override 32768 \
+  --max-prefill-length 4096 \
+  --memory-ratio 0.9
+```
+
+### Testing with shell mode
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --shell-mode
+```

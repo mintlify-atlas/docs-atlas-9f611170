@@ -1,0 +1,233 @@
+---
+title: CUDA Graph
+description: Minimize CPU overhead with CUDA graph optimization
+---
+
+CUDA graph is an optimization technique that captures a sequence of CUDA operations and replays them efficiently, dramatically reducing CPU launch overhead during the decode phase of LLM inference.
+
+## Overview
+
+Mini-SGLang supports CUDA graph capture and replay to minimize CPU overhead during decoding. This feature is **enabled by default** and provides significant performance improvements for high-throughput serving.
+
+### How It Works
+
+1. **Capture Phase:** During initialization, Mini-SGLang captures CUDA operations for different batch sizes
+2. **Replay Phase:** During inference, captured graphs are replayed instead of launching individual CUDA kernels
+3. **CPU Overhead Reduction:** Eliminates kernel launch overhead, allowing CPU to prepare the next batch while GPU executes
+
+## Configuration
+
+Use the `--cuda-graph-max-bs` flag to control CUDA graph behavior:
+
+```bash
+# Auto-tune based on GPU memory (default)
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+
+# Set maximum batch size for CUDA graph to 32
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 32
+
+# Disable CUDA graph optimization
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 0
+```
+
+<ParamField path="--cuda-graph-max-bs" type="int" default="auto">
+  Maximum batch size for CUDA graph capture.
+  
+  **Alias:** `--graph`
+  
+  - When not specified (or `null`): Auto-tuned based on available GPU memory
+  - When set to `0`: Disables CUDA graph optimization entirely
+  - When set to a positive integer: Captures graphs for batch sizes up to this value
+  
+  **Source:** `minisgl.server.args.py:149`
+</ParamField>
+
+## Batch Size Selection
+
+Mini-SGLang captures CUDA graphs for multiple batch sizes to handle varying workloads efficiently. The specific batch sizes are determined by:
+
+1. **Maximum Batch Size:** Controlled by `--cuda-graph-max-bs`
+2. **Auto-tuning:** Based on GPU memory availability when not explicitly set
+3. **Power-of-2 Strategy:** Typically captures graphs for powers of 2 (e.g., 1, 2, 4, 8, 16, 32)
+
+When a request arrives with a batch size that has a captured graph, the captured graph is replayed. Otherwise, normal kernel launches are used.
+
+## Implementation Details
+
+Each attention backend implements CUDA graph support:
+
+### FlashAttention Backend
+
+**Source:** `minisgl.attention.fa.FlashAttentionBackend` (source:~/workspace/source/python/minisgl/attention/fa.py:107)
+
+```python
+def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
+    # Captures graph for each batch size in bs_list
+    # Creates capture metadata for replay
+```
+
+### FlashInfer Backend
+
+**Source:** `minisgl.attention.fi.FlashInferBackend` (source:~/workspace/source/python/minisgl/attention/fi.py:222)
+
+```python
+def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
+    # Uses CUDAGraphBatchDecodeWithPagedKVCacheWrapper
+    # Captures graph with pre-allocated buffers
+```
+
+### TensorRT-LLM Backend
+
+**Source:** `minisgl.attention.trtllm.TensorRTLLMBackend` (source:~/workspace/source/python/minisgl/attention/trtllm.py:131)
+
+```python
+def init_capture_graph(self, max_seq_len: int, bs_list: List[int]) -> None:
+    # Captures TensorRT-LLM operations
+    # Supports both prefill and decode phases
+```
+
+## Performance Benefits
+
+CUDA graph optimization provides several benefits:
+
+### 1. Reduced CPU Overhead
+
+Without CUDA graph, each CUDA kernel launch requires CPU involvement:
+- Kernel parameter setup
+- Driver API calls
+- Synchronization overhead
+
+With CUDA graph, a single replay call executes the entire sequence.
+
+### 2. Overlap Scheduling
+
+CUDA graphs enable overlap scheduling (from [NanoFlow](https://arxiv.org/abs/2408.12757)):
+- CPU prepares the next batch while GPU executes current batch
+- Improves overall system throughput
+- Reduces end-to-end latency
+
+### 3. Deterministic Performance
+
+Captured graphs provide consistent execution times, making performance more predictable.
+
+## Usage Examples
+
+### High-Throughput Serving
+
+For maximum throughput, enable CUDA graph with a large batch size:
+
+```bash
+python -m minisgl \
+  --model "meta-llama/Llama-3-8B" \
+  --cuda-graph-max-bs 64 \
+  --max-running-requests 512 \
+  --memory-ratio 0.95
+```
+
+### Memory-Constrained Serving
+
+Reduce CUDA graph batch size to save memory:
+
+```bash
+python -m minisgl \
+  --model "meta-llama/Llama-3-70B" \
+  --tp-size 8 \
+  --cuda-graph-max-bs 16 \
+  --memory-ratio 0.9
+```
+
+### Debugging or Development
+
+Disable CUDA graph for easier debugging:
+
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cuda-graph-max-bs 0
+```
+
+### Shell Mode
+
+Shell mode automatically sets `--cuda-graph-max-bs 1` for interactive use:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --shell-mode
+```
+
+## Memory Considerations
+
+CUDA graphs require additional GPU memory:
+
+1. **Graph Storage:** Captured graphs consume memory
+2. **Multiple Batch Sizes:** Each batch size requires a separate graph
+3. **Buffer Allocation:** Pre-allocated buffers for maximum batch size
+
+**Memory vs. Performance Tradeoff:**
+- Higher `--cuda-graph-max-bs`: Better performance, more memory usage
+- Lower `--cuda-graph-max-bs`: Less memory usage, potentially lower throughput
+- `--cuda-graph-max-bs 0`: Minimum memory, no CUDA graph benefits
+
+## Auto-Tuning
+
+When `--cuda-graph-max-bs` is not specified, Mini-SGLang auto-tunes based on:
+
+1. Available GPU memory after model loading
+2. KV cache allocation (controlled by `--memory-ratio`)
+3. Estimated graph memory overhead
+4. Model size and architecture
+
+The auto-tuning algorithm aims to maximize batch size while ensuring stable memory usage.
+
+## Compatibility
+
+### Attention Backends
+
+All attention backends support CUDA graph:
+- ✅ FlashAttention (`fa`)
+- ✅ FlashInfer (`fi`)
+- ✅ TensorRT-LLM (`trtllm`)
+
+### GPU Architectures
+
+CUDA graph is supported on:
+- NVIDIA Ampere (A100, A10, etc.)
+- NVIDIA Hopper (H100, H200, etc.)
+- NVIDIA Ada Lovelace (RTX 4090, L40S, etc.)
+- Older architectures with CUDA 10.0+
+
+### Limitations
+
+- Only applies to **decode phase** (single-token generation)
+- **Prefill phase** (multi-token processing) does not use CUDA graph
+- Requires deterministic batch sizes during capture
+
+## Related Features
+
+CUDA graph works in conjunction with:
+
+- **Overlap Scheduling:** Maximizes GPU utilization by overlapping CPU and GPU work
+- **Chunked Prefill:** Splits long prompts to enable efficient batching (see `--max-prefill-length`)
+- **Radix Cache:** Reuses KV cache across requests (see [Cache Management](/configuration/cache-management))
+
+## Troubleshooting
+
+### Out of Memory Errors
+
+If you encounter OOM errors, reduce CUDA graph batch size:
+
+```bash
+python -m minisgl --model "meta-llama/Llama-3-70B" --cuda-graph-max-bs 8
+```
+
+### Performance Degradation
+
+If disabling CUDA graph improves performance, you may have:
+- Very small batch sizes (< 4)
+- Highly variable request patterns
+- Memory pressure causing swapping
+
+Try enabling with a small batch size:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 4
+```

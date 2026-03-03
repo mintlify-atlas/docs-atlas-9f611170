@@ -1,0 +1,108 @@
+---
+title: 'Models'
+description: 'List available models using the /v1/models endpoint'
+---
+
+## Endpoint
+
+```
+GET /v1/models
+```
+
+Returns a list of available models. Mini-SGLang currently serves a single model specified at server startup.
+
+## Request
+
+No request parameters required.
+
+## Response Format
+
+<ResponseField name="object" type="string">
+  Always "list" for model list responses.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  Array of model objects. Each model object contains:
+  
+  <ResponseField name="id" type="string">
+    The model identifier (typically the model path).
+  </ResponseField>
+  
+  <ResponseField name="object" type="string">
+    Always "model" for model objects.
+  </ResponseField>
+  
+  <ResponseField name="created" type="integer">
+    Unix timestamp of when the model was created/loaded.
+  </ResponseField>
+  
+  <ResponseField name="owned_by" type="string">
+    Always "mini-sglang".
+  </ResponseField>
+  
+  <ResponseField name="root" type="string">
+    The root model path.
+  </ResponseField>
+</ResponseField>
+
+## Examples
+
+### List Models with curl
+
+```bash
+curl http://localhost:8000/v1/models
+```
+
+### Example Response
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "meta-llama/Llama-3.1-8B-Instruct",
+      "object": "model",
+      "created": 1709510400,
+      "owned_by": "mini-sglang",
+      "root": "meta-llama/Llama-3.1-8B-Instruct"
+    }
+  ]
+}
+```
+
+### Using Python OpenAI Client
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="dummy"  # API key not required
+)
+
+# List all available models
+models = client.models.list()
+
+for model in models.data:
+    print(f"Model ID: {model.id}")
+    print(f"Owned by: {model.owned_by}")
+    print(f"Created: {model.created}")
+```
+
+### Using Python Requests
+
+```python
+import requests
+
+response = requests.get("http://localhost:8000/v1/models")
+data = response.json()
+
+for model in data["data"]:
+    print(f"Available model: {model['id']}")
+```
+
+## Notes
+
+- Mini-SGLang currently supports serving one model at a time
+- The model ID matches the model path specified when starting the server
+- Use the model ID from this endpoint when making requests to `/v1/chat/completions`

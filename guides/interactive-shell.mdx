@@ -1,0 +1,178 @@
+---
+title: 'Interactive Shell'
+description: 'Chat with your model directly in the terminal'
+---
+
+The interactive shell mode provides a convenient way to test and interact with your deployed model directly from the command line. The shell maintains conversation history and supports special commands for session management.
+
+## Launching the Shell
+
+<Steps>
+  <Step title="Start in shell mode">
+    Add the `--shell` flag to launch the interactive shell instead of the API server:
+
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+    ```
+  </Step>
+
+  <Step title="Wait for initialization">
+    The model will load and compile kernels. Once ready, you'll see the prompt:
+
+    ```
+    $ 
+    ```
+  </Step>
+
+  <Step title="Start chatting">
+    Type your message and press Enter to get a response from the model.
+  </Step>
+</Steps>
+
+## Example Interaction
+
+```bash
+$ python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+```
+
+Once loaded:
+
+```
+$ Hello! Can you help me understand what recursion is?
+
+Recursion is a programming technique where a function calls itself to solve a problem. Think of it like looking in a mirror that reflects another mirror - each reflection contains a smaller version of the same image.
+
+In programming, recursive functions have two key parts:
+1. Base case - where the function stops calling itself
+2. Recursive case - where the function calls itself with a simpler version of the problem
+
+For example, calculating factorial:
+- factorial(5) = 5 × factorial(4)
+- factorial(4) = 4 × factorial(3)
+- ... and so on until factorial(1) = 1 (base case)
+
+$ Thanks! Can you show me a simple example in Python?
+
+Sure! Here's a simple recursive function to calculate factorial:
+
+```python
+def factorial(n):
+    # Base case
+    if n == 0 or n == 1:
+        return 1
+    # Recursive case
+    return n * factorial(n - 1)
+
+print(factorial(5))  # Output: 120
+```
+
+This function calls itself with n-1 until it reaches the base case (n=1).
+
+$ 
+```
+
+## Shell Commands
+
+The shell supports special commands prefixed with `/`:
+
+### /reset
+
+Clears the conversation history and starts a new session:
+
+```
+$ /reset
+$ 
+```
+
+<Note>
+This command removes all previous messages from the context, allowing you to start fresh without restarting the process.
+</Note>
+
+### /exit
+
+Exits the shell and terminates the process:
+
+```
+$ /exit
+Exiting shell...
+```
+
+Alternatively, press `Ctrl+D` (EOF) to exit.
+
+## Configuration
+
+The shell mode uses environment variables for default generation parameters:
+
+<ParamField path="SHELL_MAX_TOKENS" type="integer" default="2048">
+  Maximum tokens to generate per response
+</ParamField>
+
+<ParamField path="SHELL_TEMPERATURE" type="float" default="0.7">
+  Sampling temperature for responses
+</ParamField>
+
+<ParamField path="SHELL_TOP_K" type="integer" default="50">
+  Top-k sampling parameter
+</ParamField>
+
+<ParamField path="SHELL_TOP_P" type="float" default="0.9">
+  Nucleus sampling parameter
+</ParamField>
+
+Set these before launching:
+
+```bash
+export SHELL_MAX_TOKENS=512
+export SHELL_TEMPERATURE=0.9
+python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+```
+
+## Features
+
+### Auto-completion
+
+The shell provides auto-completion for available commands. Start typing `/` and press Tab to see suggestions.
+
+### Conversation History
+
+The shell automatically maintains conversation context, allowing for multi-turn dialogues. All previous messages are sent with each request to preserve context:
+
+```
+$ What is Python?
+[Model explains Python...]
+
+$ What are its main use cases?
+[Model answers based on context about Python...]
+```
+
+### Streaming Output
+
+Responses are streamed token-by-token for a more interactive experience, similar to ChatGPT.
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Model Testing" icon="flask">
+    Quickly test model behavior and quality before deploying to production
+  </Card>
+  <Card title="Prompt Engineering" icon="wand-magic-sparkles">
+    Experiment with different prompts and conversation flows
+  </Card>
+  <Card title="Debugging" icon="bug">
+    Verify model outputs and troubleshoot generation issues
+  </Card>
+  <Card title="Demonstrations" icon="presentation">
+    Show model capabilities in live demos and presentations
+  </Card>
+</CardGroup>
+
+<Tip>
+Shell mode is not recommended for production use. For serving applications, use the [Online Serving](/guides/online-serving) mode instead.
+</Tip>
+
+## Limitations
+
+- Shell mode does not support dummy weights (testing mode)
+- History is stored in memory only and lost when the process exits
+- No support for multi-user scenarios
+- Single conversation thread only

@@ -1,0 +1,157 @@
+---
+title: SamplingParams
+description: Configuration for text generation sampling
+---
+
+The `SamplingParams` dataclass configures how tokens are sampled during text generation.
+
+## Class Definition
+
+```python
+from minisgl.core import SamplingParams
+```
+
+## Fields
+
+<ParamField path="temperature" type="float" default="0.0">
+  Controls randomness in sampling:
+  - `0.0`: Greedy decoding (always pick most likely token)
+  - `0.0 < temperature < 1.0`: Less random
+  - `1.0`: Sample according to model probabilities
+  - `> 1.0`: More random
+  
+  Lower values make output more deterministic and focused.
+</ParamField>
+
+<ParamField path="top_k" type="int" default="-1">
+  Limits sampling to the K most likely tokens:
+  - `-1`: Disabled (consider all tokens)
+  - `1`: Equivalent to greedy decoding
+  - `> 1`: Sample from top K tokens only
+  
+  Helps prevent sampling low-probability tokens.
+</ParamField>
+
+<ParamField path="top_p" type="float" default="1.0">
+  Nucleus sampling - samples from smallest set of tokens whose cumulative probability exceeds P:
+  - `1.0`: Disabled (consider all tokens)
+  - `0.0 < top_p < 1.0`: Sample from top tokens with cumulative probability P
+  
+  Dynamically adjusts vocabulary size based on probability distribution.
+</ParamField>
+
+<ParamField path="ignore_eos" type="bool" default="False">
+  Whether to ignore end-of-sequence tokens:
+  - `False`: Stop generation when EOS token is sampled
+  - `True`: Continue generating even after EOS token
+  
+  Useful for forcing generation to reach `max_tokens`.
+</ParamField>
+
+<ParamField path="max_tokens" type="int" default="1024">
+  Maximum number of tokens to generate (excluding input prompt).
+  
+  Generation stops when either:
+  - `max_tokens` tokens have been generated, or
+  - EOS token is sampled (unless `ignore_eos=True`)
+</ParamField>
+
+## Properties
+
+### is_greedy
+
+```python
+@property
+def is_greedy(self) -> bool
+```
+
+Returns `True` if the configuration will result in greedy (deterministic) decoding.
+
+Conditions:
+- `temperature <= 0.0` or `top_k == 1`
+- AND `top_p == 1.0`
+
+```python
+params = SamplingParams(temperature=0.0)
+print(params.is_greedy)  # True
+
+params = SamplingParams(temperature=0.8)
+print(params.is_greedy)  # False
+```
+
+## Usage Examples
+
+### Greedy Decoding
+
+```python
+from minisgl.core import SamplingParams
+
+# Most deterministic output
+params = SamplingParams(
+    temperature=0.0,
+    max_tokens=100
+)
+```
+
+### Balanced Sampling
+
+```python
+# Good for most applications
+params = SamplingParams(
+    temperature=0.7,
+    top_p=0.9,
+    max_tokens=256
+)
+```
+
+### Creative Generation
+
+```python
+# More diverse and creative outputs
+params = SamplingParams(
+    temperature=0.9,
+    top_p=0.95,
+    top_k=50,
+    max_tokens=512
+)
+```
+
+### Force Complete Generation
+
+```python
+# Generate exactly max_tokens, ignoring EOS
+params = SamplingParams(
+    temperature=0.8,
+    max_tokens=100,
+    ignore_eos=True
+)
+```
+
+### Constrained Sampling
+
+```python
+# Restrict to top 40 most likely tokens
+params = SamplingParams(
+    temperature=0.8,
+    top_k=40,
+    top_p=0.9,  # Both can be used together
+    max_tokens=200
+)
+```
+
+## Common Patterns
+
+| Use Case | Temperature | Top-K | Top-P | Notes |
+|----------|-------------|-------|-------|-------|
+| Factual answers | 0.0 | -1 | 1.0 | Greedy, deterministic |
+| Code generation | 0.2 | -1 | 0.95 | Low randomness |
+| General chat | 0.7 | -1 | 0.9 | Balanced |
+| Creative writing | 0.9 | 50 | 0.95 | High diversity |
+| Brainstorming | 1.0 | 100 | 0.98 | Maximum creativity |
+
+## Notes
+
+- When both `top_k` and `top_p` are set, both filters are applied sequentially
+- `temperature=0.0` is equivalent to `top_k=1` (but more efficient)
+- For reproducible results, use `temperature=0.0`
+- Higher temperature values can lead to nonsensical outputs if too high (>1.5)

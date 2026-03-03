@@ -1,0 +1,339 @@
+---
+title: Optimization Tips
+description: Performance tuning guide for Mini-SGLang
+---
+
+Mini-SGLang offers several configuration options to optimize performance for your specific workload and hardware. This guide covers best practices and tuning recommendations.
+
+## Memory Management
+
+### GPU Memory Ratio
+
+Control the fraction of GPU memory allocated to KV cache:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --memory-ratio 0.85
+```
+
+**Recommendations**:
+- **Default**: 0.9 (90% of available memory)
+- **Shared GPU**: Reduce to 0.7-0.8 if other processes need GPU memory
+- **Long contexts**: Increase to 0.95 for maximum cache capacity
+
+### Page Size Configuration
+
+Page size determines the granularity of KV cache allocation:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --page-size 256
+```
+
+**Recommendations**:
+
+| Use Case | Page Size | Rationale |
+|----------|-----------|----------|
+| Short sequences (&lt;512 tokens) | 16-32 | Reduces internal fragmentation |
+| Medium sequences (512-2048 tokens) | 64-128 | Balanced trade-off |
+| Long sequences (&gt;2048 tokens) | 256+ | Fewer page allocations |
+
+**Note**: Some attention backends override page size:
+- **TensorRT-LLM**: Only supports 16, 32, or 64
+- **FlashInfer**: Works with any power-of-2 size
+
+### Number of Pages
+
+Explicitly control the maximum number of KV cache pages:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --num-pages 10000
+```
+
+Useful when:
+- Debugging OOM issues
+- Profiling memory usage
+- Running on constrained hardware
+
+## Chunked Prefill
+
+Chunked prefill splits long prompts into smaller chunks to reduce peak memory usage and prevent OOM errors.
+
+### Configuration
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-prefill-length 8192
+```
+
+**Recommended values**:
+
+| Context Length | Chunk Size | Notes |
+|----------------|------------|-------|
+| &lt;4K tokens | 4096-8192 | Minimal chunking needed |
+| 4K-32K tokens | 8192-16384 | Balance memory and speed |
+| 32K-128K tokens | 16384-32768 | Prevent OOM on most GPUs |
+| &gt;128K tokens | 32768+ | Very long context scenarios |
+
+**Performance tips**:
+- **Too small** (&lt;512): Significant overhead from multiple kernel launches
+- **Too large** (&gt;32K): Risk of OOM, especially with large batch sizes
+- **Optimal**: Set to 2-4x your typical prompt length
+
+Chunked prefill is **enabled by default** and has been shown to improve throughput in long-context serving scenarios (see [Sarathi-Serve](https://arxiv.org/abs/2403.02310)).
+
+## CUDA Graph Optimization
+
+CUDA graphs reduce CPU kernel launch overhead during the decode phase by capturing and replaying GPU operations.
+
+### Configuration
+
+```bash
+# Enable CUDA graphs with max batch size 256
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 256
+
+# Disable CUDA graphs
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 0
+```
+
+**Recommendations**:
+
+| Workload | Max Batch Size | Rationale |
+|----------|----------------|----------|
+| Interactive (1-2 users) | 1-4 | Low concurrency |
+| Small deployment | 16-64 | Moderate traffic |
+| Production serving | 128-256 | High throughput |
+| Memory constrained | 0 (disabled) | Save GPU memory |
+
+**Trade-offs**:
+- **Higher values**: Better performance at high concurrency, but more GPU memory usage
+- **Lower values**: Less memory overhead, but may miss optimization opportunities
+- **Auto-tuning**: Leave unset to automatically tune based on GPU memory
+
+### When to Disable
+
+- Debugging decode kernels
+- Running on very limited GPU memory (&lt;8GB)
+- Shell/interactive mode (automatically disabled)
+
+## Attention Backend Selection
+
+Mini-SGLang supports multiple attention backends optimized for different phases:
+
+### Available Backends
+
+- **fa**: FlashAttention (including FlashAttention-3 on Hopper GPUs)
+- **fi**: FlashInfer
+- **trtllm**: TensorRT-LLM FMHA
+
+### Configuration
+
+```bash
+# Use FlashAttention for both prefill and decode
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa
+
+# Use FlashAttention for prefill, FlashInfer for decode (recommended)
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn fa,fi
+
+# Use TensorRT-LLM for both phases
+python -m minisgl --model "Qwen/Qwen3-0.6B" --attn trtllm
+```
+
+### Recommendations by GPU Architecture
+
+| GPU Architecture | Prefill Backend | Decode Backend | Notes |
+|------------------|----------------|----------------|-------|
+| **Hopper** (H100, H200) | `fa` (FA3) | `fi` | Default; optimal performance |
+| **Ampere** (A100, A10) | `fa` (FA2) | `fi` | Good balance |
+| **Ada** (RTX 4090) | `fa` | `fi` | Consumer GPUs |
+| **Older** (V100, T4) | `fa` | `fa` | Limited FlashInfer support |
+
+### Backend-Specific Considerations
+
+**FlashAttention**:
+- Excellent prefill performance
+- FlashAttention-3 on Hopper provides significant speedup
+- Works with any page size
+
+**FlashInfer**:
+- Optimized for decode with paged attention
+- Better performance with batched decode requests
+- Requires page size to be power of 2
+
+**TensorRT-LLM**:
+- Highly optimized NVIDIA kernels
+- **Restricts page size** to 16, 32, or 64
+- May require additional setup
+
+## Cache Management Strategy
+
+Choose between Radix Cache and naive cache management:
+
+```bash
+# Use Radix Cache (default, recommended)
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cache-type radix
+
+# Use naive cache
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cache-type naive
+```
+
+**When to use Radix Cache** (default):
+- Requests with shared prefixes (e.g., system prompts)
+- Multi-turn conversations
+- Batched requests with common context
+- Production serving scenarios
+
+**When to use naive cache**:
+- Benchmarking (for fair comparison)
+- Debugging cache-related issues
+- Workloads with no shared prefixes
+
+**Performance impact**: Radix Cache can improve throughput by 2-5x for workloads with high prefix sharing.
+
+## Overlap Scheduling
+
+Overlap scheduling hides CPU scheduling overhead by overlapping it with GPU computation.
+
+### Configuration
+
+Overlap scheduling is **enabled by default**. To disable for ablation studies:
+
+```bash
+MINISGL_DISABLE_OVERLAP_SCHEDULING=1 python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+**Performance impact**: Typically improves throughput by 5-15% by reducing scheduler overhead.
+
+### When to Disable
+
+- Debugging scheduler behavior
+- Profiling CPU overhead
+- Running ablation studies
+
+## Distributed Serving (Tensor Parallelism)
+
+Scale large models across multiple GPUs:
+
+```bash
+# 4-way tensor parallelism
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+```
+
+**Recommendations**:
+
+| Model Size | GPUs | TP Size | Notes |
+|------------|------|---------|-------|
+| &lt;7B params | 1 | 1 | Single GPU sufficient |
+| 7-13B params | 1-2 | 1-2 | Optional TP for speed |
+| 14-34B params | 2-4 | 2-4 | TP recommended |
+| 70B+ params | 4-8 | 4-8 | TP required |
+
+**Best practices**:
+- Use NVLink-connected GPUs for best performance
+- TP size should divide model layers evenly
+- PyNCCL is enabled by default (disable with `--disable-pynccl` if needed)
+
+## Advanced Tuning
+
+### Maximum Running Requests
+
+Control scheduler concurrency:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-running-requests 128
+```
+
+**Trade-offs**:
+- **Higher**: Better throughput under load, but more memory usage
+- **Lower**: Reduced memory pressure, but may bottleneck under high QPS
+
+### Maximum Sequence Length
+
+Override model's default max sequence length:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-seq-len-override 8192
+```
+
+Useful when:
+- Model supports longer context than config specifies
+- Testing with shorter sequences to save memory
+
+### Data Type
+
+Choose precision for model weights:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --dtype bfloat16
+```
+
+Options:
+- **auto** (default): FP16 for FP32/FP16 models, BF16 for BF16 models
+- **bfloat16**: Better numerical stability on Ampere+ GPUs
+- **float16**: Slightly faster on some GPUs
+- **float32**: Highest precision, but 2x memory usage
+
+## Monitoring and Debugging
+
+### Enable Detailed Logging
+
+Set log level via environment variable:
+
+```bash
+LOG_LEVEL=DEBUG python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+### Memory Profiling
+
+Monitor GPU memory usage:
+
+```bash
+# In a separate terminal
+watch -n 1 nvidia-smi
+```
+
+### Performance Profiling
+
+Use NVIDIA Nsight Systems for detailed profiling:
+
+```bash
+nsys profile -o profile.qdrep python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+## Quick Reference
+
+### Common Configuration Profiles
+
+**Maximum throughput** (production):
+```bash
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4 \
+    --cuda-graph-max-bs 256 \
+    --max-prefill-length 16384 \
+    --attn fa,fi \
+    --memory-ratio 0.9 \
+    --cache-type radix
+```
+
+**Memory-constrained**:
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" \
+    --memory-ratio 0.7 \
+    --cuda-graph-max-bs 64 \
+    --max-prefill-length 4096 \
+    --page-size 16
+```
+
+**Long-context serving**:
+```bash
+python -m minisgl --model "Qwen/Qwen3-14B" \
+    --max-seq-len-override 32768 \
+    --max-prefill-length 16384 \
+    --page-size 256 \
+    --memory-ratio 0.95 \
+    --cache-type radix
+```
+
+**Debug/development**:
+```bash
+MINISGL_DISABLE_OVERLAP_SCHEDULING=1 LOG_LEVEL=DEBUG \
+python -m minisgl --model "Qwen/Qwen3-0.6B" \
+    --cuda-graph-max-bs 0 \
+    --shell
+```

@@ -1,0 +1,289 @@
+---
+title: 'Supported Models'
+description: 'Model architectures and configuration options'
+---
+
+Mini-SGLang supports several popular open-source model architectures optimized for efficient inference. This guide covers supported models, how to specify them, and model source configuration.
+
+## Supported Architectures
+
+Mini-SGLang currently supports the following model families:
+
+<CardGroup cols={2}>
+  <Card title="Llama-3 Series" icon="meta">
+    Meta's Llama 3 and 3.1 models with various parameter sizes
+  </Card>
+  <Card title="Qwen-3 Series" icon="brain">
+    Alibaba Cloud's Qwen 3 models including MoE variants
+  </Card>
+  <Card title="Qwen-2.5 Series" icon="brain">
+    Qwen 2.5 model family with improved performance
+  </Card>
+</CardGroup>
+
+### Llama-3 Models
+
+The Llama-3 architecture (`LlamaForCausalLM`) supports:
+
+- [meta-llama/Llama-3.1-8B](https://huggingface.co/meta-llama/Llama-3.1-8B)
+- [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct)
+- [meta-llama/Llama-3.1-70B](https://huggingface.co/meta-llama/Llama-3.1-70B)
+- [meta-llama/Llama-3.1-70B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct)
+- [meta-llama/Llama-3.1-405B](https://huggingface.co/meta-llama/Llama-3.1-405B)
+- [meta-llama/Llama-3.1-405B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-405B-Instruct)
+
+And other Llama-3 compatible models.
+
+### Qwen-3 Models
+
+The Qwen-3 architecture (`Qwen3ForCausalLM`) supports:
+
+- [Qwen/Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
+- [Qwen/Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B)
+- [Qwen/Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B)
+- [Qwen/Qwen3-14B](https://huggingface.co/Qwen/Qwen3-14B)
+- [Qwen/Qwen3-32B](https://huggingface.co/Qwen/Qwen3-32B)
+
+### Qwen-3 MoE Models
+
+Mixture-of-Experts variants (`Qwen3MoeForCausalLM`):
+
+- [Qwen/Qwen3-MoE-16B](https://huggingface.co/Qwen/Qwen3-MoE-16B)
+
+### Qwen-2.5 Models
+
+The Qwen-2.5 architecture (`Qwen2ForCausalLM`) supports:
+
+- [Qwen/Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B)
+- [Qwen/Qwen2.5-1.5B](https://huggingface.co/Qwen/Qwen2.5-1.5B)
+- [Qwen/Qwen2.5-3B](https://huggingface.co/Qwen/Qwen2.5-3B)
+- [Qwen/Qwen2.5-7B](https://huggingface.co/Qwen/Qwen2.5-7B)
+- [Qwen/Qwen2.5-14B](https://huggingface.co/Qwen/Qwen2.5-14B)
+- [Qwen/Qwen2.5-32B](https://huggingface.co/Qwen/Qwen2.5-32B)
+- [Qwen/Qwen2.5-72B](https://huggingface.co/Qwen/Qwen2.5-72B)
+
+## Specifying Models
+
+### Basic Usage
+
+Specify models using the `--model` argument:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+The model identifier follows the HuggingFace format: `organization/model-name`.
+
+### Examples
+
+<CodeGroup>
+
+```bash Small Model (< 1B)
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+```bash Medium Model (7-14B)
+python -m minisgl --model "Qwen/Qwen3-14B"
+```
+
+```bash Large Model (70B+)
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+```
+
+```bash MoE Model
+python -m minisgl --model "Qwen/Qwen3-MoE-16B"
+```
+
+</CodeGroup>
+
+## Model Sources
+
+Mini-SGLang supports downloading models from two sources:
+
+### HuggingFace (Default)
+
+By default, models are downloaded from [HuggingFace Hub](https://huggingface.co/):
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+#### Gated Models
+
+For gated models (e.g., Llama-3), provide your HuggingFace token:
+
+```bash
+export HF_TOKEN=hf_your_token_here
+python -m minisgl --model "meta-llama/Llama-3.1-8B-Instruct"
+```
+
+Or use the `huggingface-cli` to login:
+
+```bash
+pip install huggingface-hub
+huggingface-cli login
+```
+
+### ModelScope
+
+For users in regions with restricted HuggingFace access, use [ModelScope](https://modelscope.cn/):
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-32B" --model-source modelscope
+```
+
+<Note>
+Model identifiers remain the same regardless of the source. Mini-SGLang handles the translation automatically.
+</Note>
+
+## Model Selection Guide
+
+### By Use Case
+
+<AccordionGroup>
+  <Accordion title="Development & Testing">
+    **Recommended**: Qwen/Qwen3-0.6B or Qwen/Qwen2.5-0.5B
+    
+    - Fast iteration
+    - Low memory footprint
+    - Runs on consumer GPUs
+    
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
+    ```
+  </Accordion>
+
+  <Accordion title="Production (Single GPU)">
+    **Recommended**: Qwen/Qwen3-14B or meta-llama/Llama-3.1-8B-Instruct
+    
+    - Good balance of quality and speed
+    - Fits on 24GB GPUs (A10, RTX 3090/4090)
+    
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-14B"
+    ```
+  </Accordion>
+
+  <Accordion title="Production (Multi-GPU)">
+    **Recommended**: Qwen/Qwen3-32B or meta-llama/Llama-3.1-70B-Instruct
+    
+    - State-of-the-art quality
+    - Requires 2-4 GPUs
+    
+    ```bash
+    python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+    ```
+  </Accordion>
+
+  <Accordion title="High Throughput">
+    **Recommended**: Qwen/Qwen3-MoE-16B
+    
+    - Mixture-of-Experts for efficiency
+    - Better throughput than dense models
+    
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-MoE-16B"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### By GPU Memory
+
+<Tabs>
+  <Tab title="8-16 GB">
+    - Qwen/Qwen3-0.6B
+    - Qwen/Qwen2.5-0.5B
+    - Qwen/Qwen2.5-1.5B
+  </Tab>
+  <Tab title="16-24 GB">
+    - Qwen/Qwen3-4B
+    - Qwen/Qwen2.5-7B
+    - meta-llama/Llama-3.1-8B-Instruct
+  </Tab>
+  <Tab title="40-48 GB">
+    - Qwen/Qwen3-14B
+    - Qwen/Qwen2.5-14B
+  </Tab>
+  <Tab title="80+ GB (Single)">
+    - Qwen/Qwen2.5-32B
+  </Tab>
+  <Tab title="Multiple GPUs">
+    - Qwen/Qwen3-32B (2-4 GPUs)
+    - meta-llama/Llama-3.1-70B (4 GPUs)
+    - meta-llama/Llama-3.1-405B (8 GPUs)
+  </Tab>
+</Tabs>
+
+## Model Architecture Detection
+
+Mini-SGLang automatically detects the model architecture from the `config.json` file:
+
+```python
+# Supported architectures in the registry:
+_MODEL_REGISTRY = {
+    "LlamaForCausalLM": (".llama", "LlamaForCausalLM"),
+    "Qwen2ForCausalLM": (".qwen2", "Qwen2ForCausalLM"),
+    "Qwen3ForCausalLM": (".qwen3", "Qwen3ForCausalLM"),
+    "Qwen3MoeForCausalLM": (".qwen3_moe", "Qwen3MoeForCausalLM"),
+}
+```
+
+If your model uses one of these architectures but isn't explicitly listed, it should still work.
+
+## Custom and Fine-tuned Models
+
+### Local Models
+
+Load models from a local path:
+
+```bash
+python -m minisgl --model /path/to/local/model
+```
+
+### Fine-tuned Models
+
+Any model fine-tuned from a supported base architecture should work:
+
+```bash
+python -m minisgl --model "your-username/your-finetuned-llama-3"
+```
+
+### Quantized Models
+
+<Warning>
+Mini-SGLang currently does not support quantized models (GPTQ, AWQ, etc.). Full-precision and bfloat16 models are supported.
+</Warning>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Model Not Found">
+    - Verify the model identifier is correct
+    - Check HuggingFace/ModelScope availability
+    - For gated models, ensure you have access and provided `HF_TOKEN`
+  </Accordion>
+
+  <Accordion title="Architecture Not Supported">
+    Error: `Model architecture X not supported`
+    
+    The model's architecture is not in the registry. Only Llama-3, Qwen-2.5, Qwen-3, and Qwen-3-MoE are currently supported.
+  </Accordion>
+
+  <Accordion title="Network Issues">
+    If HuggingFace downloads fail:
+    
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-32B" --model-source modelscope
+    ```
+  </Accordion>
+
+  <Accordion title="Out of Memory">
+    - Use a smaller model variant
+    - Enable tensor parallelism with `--tp`
+    - Reduce `--max-prefill-length`
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+For the latest list of tested models and compatibility information, check the [Mini-SGLang GitHub repository](https://github.com/sgl-project/mini-sglang).
+</Tip>

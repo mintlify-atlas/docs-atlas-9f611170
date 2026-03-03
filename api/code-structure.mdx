@@ -1,0 +1,204 @@
+---
+title: Code Structure
+description: Understanding the Mini-SGLang codebase organization
+---
+
+The Mini-SGLang source code is organized into a modular package structure located in `python/minisgl/`. Each module serves a specific purpose in the inference pipeline.
+
+## Package Structure
+
+The codebase follows a layered architecture with clear separation of concerns:
+
+### Core Data Structures (`minisgl.core`)
+
+**Location:** `python/minisgl/core.py`
+
+Provides fundamental dataclasses that represent the state of inference:
+
+- `Req` - Represents a single inference request with input tokens, cache state, and sampling parameters
+- `Batch` - Groups multiple requests for batch processing (prefill or decode phase)
+- `Context` - Holds the global state including page table, attention backend, KV cache pool, and MoE backend
+- `SamplingParams` - User-provided sampling configuration (temperature, top-k, top-p, max tokens)
+
+### Distributed Computing (`minisgl.distributed`)
+
+**Location:** `python/minisgl/distributed/`
+
+Provides tensor parallelism (TP) support:
+
+- `DistributedInfo` - Holds TP worker information (rank, world size, communication group)
+- `DistributedCommunicator` - Interface for all-reduce and all-gather operations across TP ranks
+- Integration with NCCL for efficient GPU-to-GPU communication
+
+### Model Layers (`minisgl.layers`)
+
+**Location:** `python/minisgl/layers/`
+
+Implements tensor-parallel building blocks for LLM architectures:
+
+- `BaseOP`, `StateLessOP`, `OPList` - Base classes for layer operations (`python/minisgl/layers/base.py`)
+- `VocabParallelEmbedding`, `ParallelLMHead` - Embedding layers (`python/minisgl/layers/embedding.py`)
+- `LinearRowParallel`, `LinearQKVMerged`, `LinearColParallelMerged` - Parallel linear layers (`python/minisgl/layers/linear.py`)
+- `RMSNorm`, `RMSNormFused` - Layer normalization (`python/minisgl/layers/norm.py`)
+- `get_rope`, `set_rope_device` - Rotary position embeddings (RoPE) (`python/minisgl/layers/rotary.py`)
+- `AttentionLayer` - Attention computation interface (`python/minisgl/layers/attention.py`)
+- `MoELayer` - Mixture of Experts layer (`python/minisgl/layers/moe.py`)
+- `silu_and_mul`, `gelu_and_mul` - Fused activation functions (`python/minisgl/layers/activation.py`)
+
+### Model Definitions (`minisgl.models`)
+
+**Location:** `python/minisgl/models/`
+
+Implements complete LLM architectures:
+
+- `BaseLLMModel` - Base class for all models (`python/minisgl/models/base.py`)
+- `ModelConfig`, `RotaryConfig` - Model configuration dataclasses (`python/minisgl/models/config.py`)
+- Supported models:
+  - Llama (`python/minisgl/models/llama.py`)
+  - Qwen2 (`python/minisgl/models/qwen2.py`)
+  - Qwen3 (`python/minisgl/models/qwen3.py`)
+  - Qwen3 MoE (`python/minisgl/models/qwen3_moe.py`)
+- `load_weight` - Load and shard weights from HuggingFace (`python/minisgl/models/weight.py`)
+- `get_model_class` - Model registry (`python/minisgl/models/register.py`)
+
+### Attention Backends (`minisgl.attention`)
+
+**Location:** `python/minisgl/attention/`
+
+Provides pluggable attention implementations:
+
+- `BaseAttnBackend`, `BaseAttnMetadata` - Abstract interfaces (`python/minisgl/attention/base.py`)
+- `FlashAttentionBackend` - Flash Attention 2 backend (`python/minisgl/attention/fa.py`)
+- `FlashInferBackend` - FlashInfer backend (`python/minisgl/attention/fi.py`)
+- `TensorRTLLMBackend` - TensorRT-LLM backend (`python/minisgl/attention/trtllm.py`)
+- `HybridBackend` - Supports different backends for prefill vs decode
+- `create_attention_backend` - Factory function with registry
+
+### KV Cache Management (`minisgl.kvcache`)
+
+**Location:** `python/minisgl/kvcache/`
+
+Manages key-value cache allocation and prefix caching:
+
+- `BaseKVCachePool`, `BaseCacheHandle`, `BasePrefixCache` - Abstract interfaces (`python/minisgl/kvcache/base.py`)
+- `MHAKVCache` - Multi-head attention KV cache pool (`python/minisgl/kvcache/mha_pool.py`)
+- `NaivePrefixCache` - Simple prefix cache without sharing (`python/minisgl/kvcache/naive_cache.py`)
+- `RadixPrefixCache` - Radix tree-based prefix cache for efficient sharing (`python/minisgl/kvcache/radix_cache.py`)
+- `create_kvcache_pool`, `create_prefix_cache` - Factory functions
+
+### Inference Engine (`minisgl.engine`)
+
+**Location:** `python/minisgl/engine/`
+
+Implements the TP worker on a single GPU process:
+
+- `Engine` - Main engine class that manages model, context, KV cache, and CUDA graph (`python/minisgl/engine/engine.py`)
+- `EngineConfig` - Engine configuration (`python/minisgl/engine/config.py`)
+- `ForwardOutput` - Output dataclass from forward pass
+- `BatchSamplingArgs` - Sampling arguments for batch processing (`python/minisgl/engine/sample.py`)
+- CUDA graph capture and replay (`python/minisgl/engine/graph.py`)
+
+### Scheduler (`minisgl.scheduler`)
+
+**Location:** `python/minisgl/scheduler/`
+
+Orchestrates request scheduling and engine execution:
+
+- `Scheduler` - Main scheduler class that runs on each TP worker (`python/minisgl/scheduler/scheduler.py`)
+- `SchedulerConfig` - Scheduler configuration (`python/minisgl/scheduler/config.py`)
+- Request table management (`python/minisgl/scheduler/table.py`)
+- Prefill and decode batch preparation (`python/minisgl/scheduler/prefill.py`, `python/minisgl/scheduler/decode.py`)
+- Message I/O handling (`python/minisgl/scheduler/io.py`)
+- Cache allocation utilities (`python/minisgl/scheduler/cache.py`)
+- Rank 0 scheduler receives messages from tokenizer, coordinates with other ranks, and sends to detokenizer
+
+### Message Protocol (`minisgl.message`)
+
+**Location:** `python/minisgl/message/`
+
+Defines ZMQ messages for inter-process communication:
+
+- `BaseTokenizerMsg`, `TokenizeMsg`, `DetokenizeMsg`, `AbortMsg` - Tokenizer messages (`python/minisgl/message/tokenizer.py`)
+- `BaseBackendMsg`, `BatchBackendMsg`, `AbortBackendMsg`, `ExitMsg`, `UserMsg` - Backend messages (`python/minisgl/message/backend.py`)
+- `BaseFrontendMsg`, `BatchFrontendMsg`, `UserReply` - Frontend messages (`python/minisgl/message/frontend.py`)
+- All messages support automatic serialization/deserialization
+
+### Server (`minisgl.server`)
+
+**Location:** `python/minisgl/server/`
+
+Provides the HTTP API and process launcher:
+
+- `launch_server` - Starts all Mini-SGLang subprocesses (`python/minisgl/server/launch.py`)
+- `api_server` - FastAPI server with OpenAI-compatible endpoints like `/v1/chat/completions` (`python/minisgl/server/api_server.py`)
+- CLI argument definitions (`python/minisgl/server/args.py`)
+
+### Tokenization (`minisgl.tokenizer`)
+
+**Location:** `python/minisgl/tokenizer/`
+
+Handles text-to-token conversion:
+
+- `tokenize_worker` - Worker process for tokenization and detokenization (`python/minisgl/tokenizer/server.py`)
+- Tokenization logic (`python/minisgl/tokenizer/tokenize.py`)
+- Detokenization logic (`python/minisgl/tokenizer/detokenize.py`)
+
+### Python Interface (`minisgl.llm`)
+
+**Location:** `python/minisgl/llm/`
+
+- `LLM` - High-level Python class for easy interaction with Mini-SGLang (`python/minisgl/llm/llm.py`)
+
+### Custom Kernels (`minisgl.kernel`)
+
+**Location:** `python/minisgl/kernel/`
+
+Implements optimized CUDA kernels:
+
+- TVM-based kernel interface with JIT compilation
+- PyNCCL bindings (`python/minisgl/kernel/pynccl.py`)
+- Radix tree kernels (`python/minisgl/kernel/radix.py`)
+- Tensor operations (`python/minisgl/kernel/tensor.py`)
+- MoE kernels (`python/minisgl/kernel/moe_impl.py`)
+- Triton kernels for fused MoE (`python/minisgl/kernel/triton/fused_moe.py`)
+
+### Utilities (`minisgl.utils`)
+
+**Location:** `python/minisgl/utils/`
+
+Provides common utilities:
+
+- Logger setup (`python/minisgl/utils/logger.py`)
+- ZMQ queue wrappers (`python/minisgl/utils/mp.py`)
+- HuggingFace helpers (`python/minisgl/utils/hf.py`)
+- GPU architecture detection (`python/minisgl/utils/arch.py`)
+- Registry pattern (`python/minisgl/utils/registry.py`)
+- PyTorch utilities (`python/minisgl/utils/torch_utils.py`)
+- Miscellaneous helpers (`python/minisgl/utils/misc.py`)
+
+### Benchmarking (`minisgl.benchmark`)
+
+**Location:** `python/minisgl/benchmark/`
+
+- Benchmark client (`python/minisgl/benchmark/client.py`)
+- Performance testing utilities (`python/minisgl/benchmark/perf.py`)
+
+### Mixture of Experts (`minisgl.moe`)
+
+**Location:** `python/minisgl/moe/`
+
+- `BaseMoeBackend` - MoE backend interface (`python/minisgl/moe/base.py`)
+- Fused MoE implementations (`python/minisgl/moe/fused.py`)
+
+## Module Dependencies
+
+The modules follow a clear dependency hierarchy:
+
+1. **Foundation:** `core`, `utils`
+2. **Infrastructure:** `distributed`, `message`, `kernel`
+3. **Model Building Blocks:** `layers`, `attention`, `kvcache`, `moe`
+4. **Models:** `models`
+5. **Execution:** `engine`, `scheduler`
+6. **User Interface:** `server`, `tokenizer`, `llm`, `benchmark`
+
+This structure ensures clean separation of concerns and makes the codebase easy to understand and extend.

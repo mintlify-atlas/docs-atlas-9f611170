@@ -1,0 +1,314 @@
+---
+title: Chunked Prefill
+description: Reduce peak memory usage for long-context serving
+---
+
+Chunked Prefill is a technique that splits long prompts into smaller chunks during the prefill phase, significantly reducing peak memory usage and preventing Out-Of-Memory (OOM) errors in long-context serving.
+
+## Overview
+
+Introduced by [Sarathi-Serve](https://arxiv.org/abs/2403.02310), Chunked Prefill is enabled by default in Mini-SGLang. This feature addresses the memory challenges of processing very long input sequences by breaking them into manageable pieces.
+
+<Info>
+Chunked Prefill is particularly important for long-context models where a single prefill batch could consume excessive GPU memory, starving the decode phase and reducing overall throughput.
+</Info>
+
+## The Problem: Memory Spikes
+
+During the prefill phase, the system must:
+1. Compute attention over the entire input sequence
+2. Store KV cache for all input tokens
+3. Store intermediate activations for the forward pass
+
+For long sequences (e.g., 32K or 128K tokens), this can cause:
+- **Memory spikes** that exceed GPU capacity
+- **OOM errors** that crash the serving system
+- **Starvation** of decode requests as memory is monopolized by prefill
+
+### Traditional Approach
+
+```
+Request: [32,768 tokens] → Process all at once → OOM!
+```
+
+### Chunked Prefill Approach
+
+```
+Request: [32,768 tokens]
+  Chunk 1: [0:8192] → Process → Cache KV
+  Chunk 2: [8192:16384] → Process → Cache KV  
+  Chunk 3: [16384:24576] → Process → Cache KV
+  Chunk 4: [24576:32768] → Process → Cache KV
+  Decode: [32768] → Generate tokens
+```
+
+## How It Works
+
+### Prefill Manager
+
+The `PrefillManager` handles chunking logic in `/home/daytona/workspace/source/python/minisgl/scheduler/prefill.py:116`:
+
+```python
+class PrefillAdder:
+    def _add_one_req(
+        self,
+        pending_req: PendingReq,
+        cache_handle: BaseCacheHandle,
+        table_idx: int,
+        cached_len: int,
+    ) -> Req:
+        remain_len = pending_req.input_len - cached_len
+        chunk_size = min(self.token_budget, remain_len)
+        is_chunked = chunk_size < remain_len
+        CLS = ChunkedReq if is_chunked else Req
+        
+        # Process only chunk_size tokens
+        self.token_budget -= chunk_size
+        _slice = slice(cached_len, cached_len + chunk_size)
+        device_ids = self.table_manager.token_pool[table_idx, _slice]
+        device_ids.copy_(pending_req.input_ids[_slice].pin_memory(), non_blocking=True)
+        
+        return CLS(
+            input_ids=pending_req.input_ids[: cached_len + chunk_size],
+            table_idx=table_idx,
+            cached_len=cached_len,
+            output_len=pending_req.output_len,
+            uid=pending_req.uid,
+            cache_handle=cache_handle,
+            sampling_params=pending_req.sampling_params,
+        )
+```
+
+### Chunked Request Class
+
+Chunked requests are marked with a special class to prevent premature completion:
+
+```python
+class ChunkedReq(Req):
+    def append_host(self, next_token: torch.Tensor) -> None:
+        raise NotImplementedError("ChunkedReq should not be sampled")
+    
+    @property
+    def can_decode(self) -> bool:
+        return False  # avoid being added to decode manager
+```
+
+This ensures chunked prefill requests:
+- Are **not sampled** for output tokens
+- **Stay in prefill queue** until all chunks are processed
+- **Don't enter decode phase** prematurely
+
+### Scheduling Logic
+
+The scheduler processes chunks across multiple iterations:
+
+```python
+def schedule_next_batch(self, prefill_budget: int) -> Batch | None:
+    adder = PrefillAdder(
+        token_budget=prefill_budget,
+        reserved_size=self.decode_manager.inflight_tokens,
+        cache_manager=self.cache_manager,
+        table_manager=self.table_manager,
+    )
+    
+    reqs: List[Req] = []
+    chunked_list: List[PendingReq] = []
+    
+    for pending_req in self.pending_list:
+        if req := adder.try_add_one(pending_req):
+            pending_req.chunked_req = None
+            if isinstance(req, ChunkedReq):
+                # Keep in pending list for next chunk
+                pending_req.chunked_req = req
+                chunked_list.append(pending_req)
+            reqs.append(req)
+        else:
+            break
+    
+    # Chunked requests stay at front of queue
+    self.pending_list = chunked_list + self.pending_list[len(reqs):]
+    return Batch(reqs=reqs, phase="prefill")
+```
+
+<Note>
+Chunked requests are prioritized in the pending list to ensure all chunks of a request are processed before moving to new requests. This prevents head-of-line blocking.
+</Note>
+
+## Configuration
+
+### Max Prefill Length
+
+Control the chunk size with `--max-prefill-length`:
+
+```bash
+# Default: 8192 tokens per chunk
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-prefill-length 8192
+
+# Larger chunks (more memory, faster prefill)
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-prefill-length 16384
+
+# Smaller chunks (less memory, slower prefill)
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-prefill-length 4096
+```
+
+The `max-prefill-length` is also accessible via `SchedulerConfig.max_extend_tokens`.
+
+<Info>
+The `token_budget` in the prefill adder is set to `max_extend_tokens` and shared across all requests in a batch. This ensures the total number of tokens processed in a single iteration stays within limits.
+</Info>
+
+### Choosing the Right Value
+
+- **Too large**: May cause OOM on long sequences
+- **Too small**: Excessive overhead from many small batches
+- **Recommended**: Start with default (8192) and adjust based on:
+  - Available GPU memory
+  - Typical sequence lengths
+  - Model size and architecture
+
+<Tip>
+Setting `--max-prefill-length` to a very small value (e.g., 128) is **not recommended** as it may significantly degrade performance due to excessive chunking overhead. Values between 4096-16384 work well for most use cases.
+</Tip>
+
+## Benefits
+
+### Prevents OOM Errors
+
+By limiting the maximum tokens processed in a single forward pass, chunked prefill prevents memory spikes that could crash the server.
+
+**Without chunked prefill:**
+```
+[Long request: 64K tokens] → OOM → Server crash
+```
+
+**With chunked prefill:**
+```
+[Long request: 64K tokens]
+  → Chunk 1: 8K tokens ✓
+  → Chunk 2: 8K tokens ✓
+  → ... (8 chunks total)
+  → Success!
+```
+
+### Enables Long-Context Serving
+
+Models with large context windows (32K, 128K, or even 1M tokens) can be served effectively:
+
+```bash
+# Serve Qwen3-14B with 32K context
+python -m minisgl --model "Qwen/Qwen3-14B" --max-prefill-length 8192
+```
+
+### Better Resource Utilization
+
+By controlling prefill memory usage, more memory remains available for:
+- **Decode requests**: Maintains responsiveness
+- **KV cache**: Supports more concurrent requests
+- **Batch processing**: Higher throughput
+
+## Memory Estimation
+
+The prefill adder estimates memory requirements before processing:
+
+```python
+def _try_allocate_one(self, req: PendingReq) -> Tuple[BaseCacheHandle, int] | None:
+    handle = self.cache_manager.match_req(req).cuda_handle
+    cached_len = handle.cached_len
+    extend_len = req.input_len - cached_len
+    estimated_len = extend_len + req.output_len
+    
+    # Check if we have enough memory (including reserved space for decode)
+    if estimated_len + self.reserved_size > self.cache_manager.available_size:
+        return None
+    
+    self.cache_manager.lock(handle)
+    # Double-check after locking
+    if estimated_len + self.reserved_size > self.cache_manager.available_size:
+        return self.cache_manager.unlock(handle)
+    
+    table_idx = self.table_manager.allocate()
+    return handle, table_idx
+```
+
+The `reserved_size` accounts for in-flight decode requests to prevent starvation:
+
+```python
+adder = PrefillAdder(
+    token_budget=prefill_budget,
+    reserved_size=self.decode_manager.inflight_tokens,  # Reserve for decode
+    cache_manager=self.cache_manager,
+    table_manager=self.table_manager,
+)
+```
+
+## Integration with Radix Cache
+
+Chunked Prefill works seamlessly with Radix Cache:
+
+1. **First chunk**: Matches prefix in cache, only processes uncached portion
+2. **Subsequent chunks**: Continue from cached state
+3. **After completion**: Full sequence is cached for future reuse
+
+```python
+# After each chunk is processed (for non-ChunkedReq)
+if batch.is_prefill:
+    self.cache_manager.cache_req(req, finished=False)
+```
+
+This means even partially processed requests can benefit from and contribute to the cache.
+
+## Performance Considerations
+
+### Trade-offs
+
+| Aspect | Large Chunks | Small Chunks |
+|--------|--------------|-------------|
+| Memory usage | Higher peak | Lower peak |
+| Prefill speed | Faster (fewer iterations) | Slower (more iterations) |
+| OOM risk | Higher | Lower |
+| Decode starvation | Higher | Lower |
+
+### Benchmarking
+
+For performance testing without chunked prefill:
+
+```bash
+# Set very large max-prefill-length to effectively disable chunking
+python -m minisgl --model "Qwen/Qwen3-0.6B" --max-prefill-length 100000
+```
+
+Compare throughput and latency with different `--max-prefill-length` values to find the optimal setting for your workload.
+
+## Example: Processing a Long Document
+
+```python
+# Request with 40K token document
+request = {
+    "messages": [{"role": "user", "content": long_document}],
+    "max_tokens": 1000
+}
+
+# System behavior with max-prefill-length=8192:
+# Iteration 1: Process tokens 0-8192 (chunk 1)
+# Iteration 2: Process tokens 8192-16384 (chunk 2)
+# Iteration 3: Process tokens 16384-24576 (chunk 3)
+# Iteration 4: Process tokens 24576-32768 (chunk 4)
+# Iteration 5: Process tokens 32768-40000 (chunk 5)
+# Iteration 6+: Decode phase, generate 1000 tokens
+```
+
+Each chunk is processed in a separate forward pass, keeping memory usage stable.
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Radix Cache" icon="tree" href="/concepts/radix-cache">
+    Learn how KV cache reuse works with chunked prefill
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the scheduler's role in chunked prefill
+  </Card>
+  <Card title="Overlap Scheduling" icon="clock" href="/concepts/overlap-scheduling">
+    See how chunking interacts with scheduling optimizations
+  </Card>
+</CardGroup>

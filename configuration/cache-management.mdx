@@ -1,0 +1,345 @@
+---
+title: Cache Management
+description: Radix cache vs. naive cache for KV cache reuse
+---
+
+Mini-SGLang provides two KV cache management strategies: **Radix Cache** for automatic prefix sharing across requests, and **Naive Cache** for simple per-request isolation. The cache strategy is controlled by the `--cache-type` flag.
+
+## Overview
+
+KV (Key-Value) cache stores intermediate attention states during LLM inference. Effective cache management can dramatically reduce computation by reusing cached states for shared prompt prefixes.
+
+## Cache Strategies
+
+### Radix Cache (Default)
+
+Radix cache implements a radix tree data structure to automatically detect and reuse shared prefixes across requests. This is the **default** cache management strategy.
+
+**Key Features:**
+- Automatic prefix matching and reuse
+- LRU-based eviction for cache management
+- Supports dynamic node splitting and merging
+- Reduces redundant computation for common prefixes
+
+**Implementation:** `minisgl.kvcache.radix_cache.RadixPrefixCache` (source:~/workspace/source/python/minisgl/kvcache/radix_cache.py:101)
+
+**When to Use:**
+- Multi-turn conversations with shared history
+- Batch processing with common system prompts
+- Few-shot prompting with repeated examples
+- RAG (Retrieval-Augmented Generation) with shared context
+
+### Naive Cache
+
+Naive cache provides simple per-request cache isolation without any prefix sharing.
+
+**Key Features:**
+- No prefix matching or sharing
+- Minimal memory overhead
+- Simpler implementation for debugging
+- Each request maintains independent cache
+
+**Implementation:** `minisgl.kvcache.naive_cache.NaivePrefixCache` (source:~/workspace/source/python/minisgl/kvcache/naive_cache.py:16)
+
+**When to Use:**
+- Unique requests with no shared prefixes
+- Testing and debugging
+- Benchmarking without cache effects
+- Simple single-request scenarios
+
+## Configuration
+
+Use the `--cache-type` flag to select the cache strategy:
+
+```bash
+# Use radix cache (default)
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cache-type radix
+
+# Use naive cache
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cache-type naive
+```
+
+<ParamField path="--cache-type" type="string" default="radix">
+  KV cache management strategy.
+  
+  **Choices:** `radix`, `naive`
+  
+  - `radix`: Enables automatic prefix sharing across requests
+  - `naive`: Disables prefix sharing, each request has independent cache
+  
+  **Source:** `minisgl.server.args.py:206`
+</ParamField>
+
+## Radix Cache Details
+
+### How It Works
+
+Radix cache organizes KV cache entries in a radix tree structure:
+
+1. **Tree Structure:** Each node represents a prefix of token IDs
+2. **Prefix Matching:** Incoming requests traverse the tree to find matching prefixes
+3. **Cache Reuse:** Matched nodes provide cached KV states
+4. **Dynamic Splitting:** Nodes split when partial matches occur
+5. **LRU Eviction:** Least recently used nodes are evicted when memory is needed
+
+![Radix Attention Illustration](https://lmsys.org/images/blog/sglang/radix_attn.jpg)
+*Illustration from [LMSYS Blog](https://lmsys.org/blog/2024-01-17-sglang/)*
+
+### Tree Operations
+
+#### Prefix Matching
+
+**Source:** `radix_cache.py:132`
+
+```python
+def match_prefix(self, input_ids: torch.Tensor) -> MatchResult:
+    # Walks the radix tree to find longest matching prefix
+    # Returns handle with cached indices
+```
+
+#### Insertion
+
+**Source:** `radix_cache.py:136`
+
+```python
+def insert_prefix(self, input_ids: torch.Tensor, indices: torch.Tensor) -> InsertResult:
+    # Inserts new prefix into tree (aligned to page_size)
+    # May create new nodes or split existing ones
+```
+
+#### Eviction
+
+**Source:** `radix_cache.py:148`
+
+```python
+def evict(self, size: int) -> torch.Tensor:
+    # Evicts LRU leaf nodes to free specified size
+    # Returns indices of evicted pages
+```
+
+### Node Structure
+
+**Source:** `radix_cache.py:17`
+
+Each `RadixTreeNode` contains:
+- `_key`: Token IDs for this node
+- `_value`: Physical page indices in KV cache
+- `_length`: Number of tokens
+- `children`: Dictionary of child nodes
+- `ref_count`: Reference count for protection from eviction
+- `timestamp`: LRU timestamp
+
+### Memory Management
+
+Radix cache tracks two types of memory:
+
+1. **Protected Size:** Nodes currently in use (ref_count > 0)
+2. **Evictable Size:** Unused nodes available for eviction (ref_count == 0)
+
+**Source:** `radix_cache.py:181`
+
+```python
+@property
+def size_info(self) -> SizeInfo:
+    return SizeInfo(
+        evictable_size=self.evictable_size,
+        protected_size=self.protected_size,
+    )
+```
+
+### Page Alignment
+
+Radix cache aligns all operations to page boundaries:
+
+**Source:** `radix_cache.py:137`
+
+```python
+insert_len = align_down(len(input_ids), self.page_size)
+```
+
+This ensures efficient memory management and compatibility with paged attention backends.
+
+## Naive Cache Details
+
+### Implementation
+
+Naive cache provides minimal implementation:
+
+**Source:** `naive_cache.py:16`
+
+```python
+class NaivePrefixCache(BasePrefixCache):
+    def match_prefix(self, input_ids: torch.Tensor) -> MatchResult:
+        # Always returns empty match (no cache hit)
+        return MatchResult(NaiveCacheHandle())
+    
+    def insert_prefix(self, input_ids: torch.Tensor, indices: torch.Tensor) -> InsertResult:
+        # Does nothing (no caching)
+        return InsertResult(0, NaiveCacheHandle())
+    
+    def evict(self, size: int) -> torch.Tensor:
+        # Cannot evict (no cache)
+        raise NotImplementedError("NaiveCacheManager does not support eviction.")
+```
+
+### Memory Overhead
+
+Naive cache has minimal memory overhead:
+- No tree structure
+- No metadata tracking
+- Simple cache handle objects
+
+## Performance Comparison
+
+### Radix Cache Benefits
+
+**Scenario:** 100 requests with shared 500-token system prompt
+
+- **Without radix cache:** 100 × 500 = 50,000 tokens computed
+- **With radix cache:** 500 (first request) + 100 × unique tokens
+- **Speedup:** Up to 50× for prompt processing
+
+### When Naive Outperforms Radix
+
+- **No shared prefixes:** Radix overhead without benefits
+- **Highly variable requests:** Rare cache hits
+- **Small batch sizes:** Overhead dominates
+
+## Usage Examples
+
+### Multi-Turn Chat with Radix Cache
+
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cache-type radix \
+  --page-size 1 \
+  --memory-ratio 0.9
+```
+
+Benefits:
+- Reuses chat history across turns
+- Reduces latency for follow-up questions
+- Improves throughput for concurrent conversations
+
+### Batch Processing with Shared Prompts
+
+```bash
+python -m minisgl \
+  --model "meta-llama/Llama-3-8B" \
+  --cache-type radix \
+  --max-running-requests 256
+```
+
+Benefits:
+- Shares system prompt across all requests
+- Reuses few-shot examples
+- Dramatically reduces prefill time
+
+### Simple Testing with Naive Cache
+
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cache-type naive \
+  --max-running-requests 1
+```
+
+Benefits:
+- Simpler debugging
+- Predictable memory usage
+- No cache-related side effects
+
+### Shell Mode (Auto Radix Cache)
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --shell-mode
+```
+
+In shell mode, radix cache automatically reuses conversation history. Use `/reset` to clear cache and start a new session.
+
+## Page Size Interaction
+
+Cache management interacts with page size (`--page-size`):
+
+- **Radix cache:** Aligns all cache entries to page boundaries
+- **Smaller page size:** More granular cache reuse, higher overhead
+- **Larger page size:** Less granular reuse, lower overhead
+
+**Recommendation:** Use `--page-size 1` with radix cache for maximum reuse granularity.
+
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cache-type radix \
+  --page-size 1
+```
+
+## Memory Ratio Tuning
+
+The `--memory-ratio` flag controls how much GPU memory is allocated for KV cache:
+
+```bash
+# Allocate 95% of GPU memory for KV cache
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cache-type radix \
+  --memory-ratio 0.95
+```
+
+With radix cache:
+- Higher memory ratio → More cache reuse opportunities
+- Lower memory ratio → More frequent evictions
+
+## Design Origin
+
+Radix cache is adopted from the original [SGLang](https://github.com/sgl-project/sglang) design, which introduced this optimization for efficient KV cache management in LLM serving.
+
+**Reference:** [SGLang Blog Post on Radix Attention](https://lmsys.org/blog/2024-01-17-sglang/)
+
+## Source Code Reference
+
+Cache management implementations:
+
+- **Registry:** `kvcache/__init__.py:24` (`SUPPORTED_CACHE_MANAGER`)
+- **Radix Cache:** `kvcache/radix_cache.py:101` (`RadixPrefixCache`)
+- **Naive Cache:** `kvcache/naive_cache.py:16` (`NaivePrefixCache`)
+- **Base Interface:** `kvcache/base.py` (`BasePrefixCache`)
+
+Server argument parsing:
+
+- **CLI Flag:** `server/args.py:206` (`--cache-type`)
+
+## Troubleshooting
+
+### High Memory Usage with Radix Cache
+
+Reduce memory ratio or number of pages:
+
+```bash
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cache-type radix \
+  --memory-ratio 0.85
+```
+
+### Poor Cache Hit Rate
+
+Check if requests actually share prefixes:
+
+```bash
+# Try naive cache to compare performance
+python -m minisgl \
+  --model "Qwen/Qwen3-0.6B" \
+  --cache-type naive
+```
+
+If performance is similar, your workload may not benefit from radix cache.
+
+### Eviction Errors
+
+Naive cache does not support eviction. If you see eviction errors, ensure you're using radix cache:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cache-type radix
+```

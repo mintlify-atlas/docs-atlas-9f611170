@@ -1,0 +1,94 @@
+---
+title: Introduction
+description: A lightweight yet high-performance inference framework for Large Language Models
+---
+
+# Mini-SGLang
+
+Mini-SGLang is a compact implementation of [SGLang](https://github.com/sgl-project/sglang), designed to demystify the complexities of modern LLM serving systems. With a compact codebase of **~5,000 lines of Python**, it serves as both a capable inference engine and a transparent reference for researchers and developers.
+
+<Note>
+  **Platform Support**: Mini-SGLang currently supports **Linux only** (x86_64 and aarch64). Windows and macOS are not supported due to dependencies on Linux-specific CUDA kernels (`sgl-kernel`, `flashinfer`). We recommend using [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) on Windows or Docker for cross-platform compatibility.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="High Performance" icon="rocket">
+    Achieves state-of-the-art throughput and latency with advanced optimizations including FlashAttention and FlashInfer kernels.
+  </Card>
+  
+  <Card title="Lightweight & Readable" icon="book-open">
+    A clean, modular, and fully type-annotated codebase that is easy to understand and modify - just ~5,000 lines of Python.
+  </Card>
+  
+  <Card title="Radix Cache" icon="diagram-project">
+    Reuses KV cache for shared prefixes across requests, reducing redundant computation and improving efficiency.
+  </Card>
+  
+  <Card title="Chunked Prefill" icon="scissors">
+    Reduces peak memory usage for long-context serving by splitting prompts into smaller chunks during the prefill phase.
+  </Card>
+  
+  <Card title="Overlap Scheduling" icon="layer-group">
+    Hides CPU scheduling overhead with GPU computation, improving overall system throughput.
+  </Card>
+  
+  <Card title="Tensor Parallelism" icon="server">
+    Scales inference across multiple GPUs seamlessly with built-in support for distributed serving.
+  </Card>
+</CardGroup>
+
+## Advanced Optimizations
+
+Mini-SGLang integrates cutting-edge techniques to maximize performance:
+
+- **Radix Cache**: Reuses KV cache for shared prefixes across requests
+- **Chunked Prefill**: Reduces peak memory usage for long-context serving
+- **Overlap Scheduling**: Hides CPU scheduling overhead with GPU computation
+- **Tensor Parallelism**: Scales inference across multiple GPUs
+- **Optimized Kernels**: Integrates **FlashAttention** and **FlashInfer** for maximum efficiency
+- **CUDA Graph**: Minimizes CPU launch overhead during decoding
+
+## Supported Models
+
+Mini-SGLang currently supports the following model architectures:
+
+- [Llama-3](https://huggingface.co/collections/meta-llama/llama-31) series
+- [Qwen-3](https://huggingface.co/collections/Qwen/qwen3) series (including MoE)
+- [Qwen-2.5](https://huggingface.co/collections/Qwen/qwen25) series
+
+## Getting Started
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="bolt" href="/quickstart">
+    Get up and running with Mini-SGLang in under 5 minutes
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation instructions for all platforms and methods
+  </Card>
+</CardGroup>
+
+## What Makes Mini-SGLang Special?
+
+Mini-SGLang bridges the gap between performance and transparency. While most LLM serving frameworks are either high-performance but complex, or simple but slow, Mini-SGLang delivers both:
+
+- **Educational**: The compact, well-documented codebase makes it an ideal learning resource for understanding modern LLM serving techniques
+- **Production-Ready**: Despite its simplicity, it delivers competitive performance with state-of-the-art optimizations
+- **Modular Design**: Clean abstractions make it easy to experiment with new ideas and customize for specific use cases
+
+## System Architecture
+
+Mini-SGLang is designed as a distributed system with several independent processes working together:
+
+- **API Server**: Provides an OpenAI-compatible API to receive prompts and return generated text
+- **Tokenizer Worker**: Converts input text into tokens that the model can understand
+- **Detokenizer Worker**: Converts model output tokens back into human-readable text
+- **Scheduler Worker**: Manages computation and resource allocation for each GPU
+
+Components communicate using **ZeroMQ (ZMQ)** for control messages and **NCCL** for heavy tensor data exchange between GPUs.
+
+<Tip>
+  Want to dive deeper? Check out the [system architecture documentation](https://github.com/sgl-project/mini-sglang/blob/main/docs/structures.md) to understand the complete data flow and code organization.
+</Tip>

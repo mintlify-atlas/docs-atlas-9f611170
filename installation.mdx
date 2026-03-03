@@ -1,0 +1,329 @@
+---
+title: Installation
+description: Detailed installation instructions for Mini-SGLang across different platforms and methods
+---
+
+# Installation
+
+This guide covers all installation methods for Mini-SGLang, including platform-specific instructions and prerequisites.
+
+<Warning>
+  **Platform Support**: Mini-SGLang currently supports **Linux only** (x86_64 and aarch64). Windows and macOS are not supported due to dependencies on Linux-specific CUDA kernels (`sgl-kernel`, `flashinfer`).
+</Warning>
+
+## Prerequisites
+
+Before installing Mini-SGLang, ensure you have the following:
+
+### System Requirements
+
+- **Operating System**: Linux (x86_64 or aarch64)
+- **Python**: Version 3.10 or higher (3.12 recommended)
+- **GPU**: NVIDIA GPU with CUDA support
+- **CUDA Toolkit**: Required for JIT-compilation of CUDA kernels
+
+<Note>
+  **CUDA Toolkit Version**: Mini-SGLang relies on CUDA kernels that are JIT-compiled. Ensure your CUDA Toolkit version matches your driver's CUDA capability. Check your driver version with `nvidia-smi`.
+</Note>
+
+### Verify CUDA Installation
+
+Check your CUDA driver version:
+
+```bash
+nvidia-smi
+```
+
+Ensure the NVIDIA CUDA Toolkit is installed and accessible. You can download it from [NVIDIA's website](https://developer.nvidia.com/cuda-downloads).
+
+## Installation Methods
+
+### Method 1: Install with uv (Recommended)
+
+We recommend using `uv` for fast and reliable installation. Note that `uv` does not conflict with `conda`.
+
+<Steps>
+  <Step title="Install uv (if not already installed)">
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+  </Step>
+  
+  <Step title="Create a virtual environment">
+    ```bash
+    uv venv --python=3.12
+    source .venv/bin/activate
+    ```
+  </Step>
+  
+  <Step title="Clone and install Mini-SGLang">
+    ```bash
+    git clone https://github.com/sgl-project/mini-sglang.git
+    cd mini-sglang
+    uv pip install -e .
+    ```
+  </Step>
+  
+  <Step title="Verify installation">
+    ```bash
+    python -m minisgl --help
+    ```
+  </Step>
+</Steps>
+
+### Method 2: Install with pip
+
+If you prefer using standard Python tools:
+
+<Steps>
+  <Step title="Create a virtual environment">
+    ```bash
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    ```
+  </Step>
+  
+  <Step title="Clone and install Mini-SGLang">
+    ```bash
+    git clone https://github.com/sgl-project/mini-sglang.git
+    cd mini-sglang
+    pip install -e .
+    ```
+  </Step>
+  
+  <Step title="Verify installation">
+    ```bash
+    python -m minisgl --help
+    ```
+  </Step>
+</Steps>
+
+### Method 3: Docker Installation
+
+Docker provides a consistent environment and is especially useful for cross-platform compatibility.
+
+#### Prerequisites for Docker
+
+- [Docker](https://docs.docker.com/get-docker/) installed
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/sgl-project/mini-sglang.git
+    cd mini-sglang
+    ```
+  </Step>
+  
+  <Step title="Build the Docker image">
+    ```bash
+    docker build -t minisgl .
+    ```
+  </Step>
+  
+  <Step title="Run the server">
+    ```bash
+    docker run --gpus all -p 1919:1919 \
+        minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+    ```
+    
+    The server will be accessible at `http://localhost:1919`.
+  </Step>
+</Steps>
+
+#### Docker Options
+
+<CodeGroup>
+```bash Basic Server
+# Run the server on default port 1919
+docker run --gpus all -p 1919:1919 \
+    minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+
+```bash Interactive Shell
+# Run in interactive shell mode
+docker run -it --gpus all \
+    minisgl --model Qwen/Qwen3-0.6B --shell
+```
+
+```bash Persistent Caches
+# Use Docker volumes for faster subsequent startups
+docker run --gpus all -p 1919:1919 \
+    -v huggingface_cache:/app/.cache/huggingface \
+    -v tvm_cache:/app/.cache/tvm-ffi \
+    -v flashinfer_cache:/app/.cache/flashinfer \
+    minisgl --model Qwen/Qwen3-0.6B --host 0.0.0.0
+```
+</CodeGroup>
+
+<Tip>
+  Using Docker volumes for caches (as shown in the third example) significantly speeds up subsequent container starts by persisting downloaded models and compiled kernels.
+</Tip>
+
+## Platform-Specific Instructions
+
+### Windows (WSL2)
+
+Since Mini-SGLang requires Linux-specific dependencies, Windows users should use WSL2:
+
+<Steps>
+  <Step title="Install WSL2">
+    Open PowerShell as Administrator and run:
+    
+    ```powershell
+    wsl --install
+    ```
+    
+    Restart your computer when prompted.
+  </Step>
+  
+  <Step title="Install CUDA on WSL2">
+    Follow [NVIDIA's WSL2 CUDA guide](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) to install CUDA support.
+    
+    <Note>
+      Ensure your Windows GPU drivers support WSL2. You can check this by running `nvidia-smi` inside WSL2.
+    </Note>
+  </Step>
+  
+  <Step title="Install Mini-SGLang in WSL2">
+    Inside the WSL2 terminal:
+    
+    ```bash
+    git clone https://github.com/sgl-project/mini-sglang.git
+    cd mini-sglang && uv venv --python=3.12 && source .venv/bin/activate
+    uv pip install -e .
+    ```
+  </Step>
+  
+  <Step title="Access from Windows">
+    The server will be accessible at `http://localhost:1919` from Windows browsers and applications.
+  </Step>
+</Steps>
+
+### macOS
+
+<Warning>
+  macOS is **not supported** due to dependencies on Linux-specific CUDA kernels. macOS users should use Docker or a Linux VM to run Mini-SGLang.
+</Warning>
+
+## Dependencies
+
+Mini-SGLang automatically installs the following core dependencies:
+
+- **torch** (&lt;2.10.0): PyTorch for tensor operations
+- **transformers** (&gt;=4.56.0, &lt;=4.57.3): Hugging Face transformers
+- **flashinfer-python** (&gt;=0.5.3): FlashInfer attention backend
+- **sgl_kernel** (&gt;=0.3.17.post1): Custom CUDA kernels
+- **apache-tvm-ffi** (&gt;=0.1.4): Python binding and JIT interface for kernels
+- **fastapi**: API server framework
+- **uvicorn**: ASGI server
+- **pyzmq**: ZeroMQ for inter-process communication
+- **accelerate**: Hugging Face accelerate library
+- **modelscope**: Alternative model source (useful in China)
+- **openai**: OpenAI client for testing
+- **prompt_toolkit**: Interactive shell interface
+
+### Development Dependencies
+
+To install development dependencies for testing and contributing:
+
+```bash
+pip install -e ".[dev]"
+```
+
+This includes:
+- pytest and pytest-cov for testing
+- black, ruff, and flake8 for code formatting and linting
+- mypy for type checking
+- matplotlib for benchmarking visualizations
+
+## Configuration Options
+
+Mini-SGLang uses command-line arguments for configuration. View all available options:
+
+```bash
+python -m minisgl --help
+```
+
+### Common Options
+
+- `--model`: HuggingFace model name (e.g., "Qwen/Qwen3-0.6B")
+- `--tp`: Tensor parallelism degree (number of GPUs)
+- `--port`: Server port (default: 1919)
+- `--host`: Server host (default: 127.0.0.1)
+- `--shell`: Launch interactive shell mode
+- `--model-source`: Model source ("huggingface" or "modelscope")
+- `--max-prefill-length`: Maximum prefill chunk size
+- `--page-size`: KV cache page size
+- `--attn`: Attention backend (e.g., "fa,fi" for FlashAttention prefill and FlashInfer decode)
+- `--cache`: Cache management strategy ("radix" or "naive")
+- `--cuda-graph-max-bs`: Maximum batch size for CUDA graph capture (0 to disable)
+
+## Troubleshooting
+
+### CUDA Toolkit Issues
+
+If you see errors about missing CUDA toolkit:
+
+1. Verify CUDA toolkit is installed:
+   ```bash
+   nvcc --version
+   ```
+
+2. Ensure CUDA toolkit version matches your driver:
+   ```bash
+   nvidia-smi
+   ```
+
+3. Add CUDA to your PATH if needed:
+   ```bash
+   export PATH=/usr/local/cuda/bin:$PATH
+   export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+   ```
+
+### Import Errors
+
+If you encounter import errors for `sgl_kernel` or `flashinfer`:
+
+- These packages require Linux and CUDA support
+- Ensure you're on a Linux system with NVIDIA GPU
+- Verify CUDA toolkit is properly installed
+- Try reinstalling: `pip install --force-reinstall sgl_kernel flashinfer-python`
+
+### Model Download Issues
+
+If you have trouble downloading models from HuggingFace:
+
+```bash
+# Use ModelScope instead (especially useful in China)
+python -m minisgl --model "Qwen/Qwen3-0.6B" --model-source modelscope
+```
+
+### Out of Memory Errors
+
+If you encounter OOM errors:
+
+1. Use a smaller model for testing (e.g., Qwen3-0.6B)
+2. Reduce max prefill length: `--max-prefill-length 2048`
+3. Adjust page size: `--page-size 16`
+4. Reduce CUDA graph batch size: `--cuda-graph-max-bs 32`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="bolt" href="/quickstart">
+    Get up and running in under 5 minutes
+  </Card>
+  
+  <Card title="Features" icon="star" href="https://github.com/sgl-project/mini-sglang/blob/main/docs/features.md">
+    Explore all features and configuration options
+  </Card>
+  
+  <Card title="System Architecture" icon="diagram-project" href="https://github.com/sgl-project/mini-sglang/blob/main/docs/structures.md">
+    Understand the design and data flow
+  </Card>
+  
+  <Card title="Benchmarks" icon="chart-line" href="https://github.com/sgl-project/mini-sglang#benchmark">
+    See performance comparisons
+  </Card>
+</CardGroup>

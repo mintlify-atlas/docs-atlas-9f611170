@@ -1,0 +1,223 @@
+---
+title: 'Online Serving'
+description: 'Deploy Mini-SGLang as an OpenAI-compatible API server'
+---
+
+Mini-SGLang provides an OpenAI-compatible API server that allows you to deploy large language models and integrate them with existing tools and clients.
+
+## Launching the API Server
+
+<Steps>
+  <Step title="Start the server">
+    Launch the API server with a single command. The server will be available on port 1919 by default.
+
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-0.6B"
+    ```
+
+    To use a custom port:
+
+    ```bash
+    python -m minisgl --model "Qwen/Qwen3-0.6B" --port 30000
+    ```
+  </Step>
+
+  <Step title="Wait for server initialization">
+    The server will download the model (if not already cached) and compile necessary kernels. You should see output indicating the server is ready:
+
+    ```
+    API server is ready to serve on 0.0.0.0:1919
+    ```
+  </Step>
+
+  <Step title="Verify the server is running">
+    Check available models:
+
+    ```bash
+    curl http://localhost:1919/v1/models
+    ```
+
+    Expected output:
+
+    ```json
+    {
+      "object": "list",
+      "data": [
+        {
+          "id": "Qwen/Qwen3-0.6B",
+          "object": "model",
+          "created": 1709510400,
+          "owned_by": "mini-sglang",
+          "root": "Qwen/Qwen3-0.6B"
+        }
+      ]
+    }
+    ```
+  </Step>
+</Steps>
+
+## Sending Requests
+
+### Chat Completions
+
+The `/v1/chat/completions` endpoint accepts OpenAI-compatible requests:
+
+```bash
+curl http://localhost:1919/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-0.6B",
+    "messages": [
+      {"role": "user", "content": "What is the capital of France?"}
+    ],
+    "max_tokens": 100,
+    "temperature": 0.7,
+    "stream": true
+  }'
+```
+
+### Supported Parameters
+
+<ParamField path="model" type="string" required>
+  Model identifier (must match the deployed model)
+</ParamField>
+
+<ParamField path="messages" type="array" required>
+  Array of message objects with `role` and `content` fields
+</ParamField>
+
+<ParamField path="max_tokens" type="integer" default="16">
+  Maximum number of tokens to generate
+</ParamField>
+
+<ParamField path="temperature" type="float" default="1.0">
+  Sampling temperature (higher values = more random)
+</ParamField>
+
+<ParamField path="top_k" type="integer" default="-1">
+  Top-k sampling parameter
+</ParamField>
+
+<ParamField path="top_p" type="float" default="1.0">
+  Nucleus sampling parameter
+</ParamField>
+
+<ParamField path="stream" type="boolean" default="false">
+  Enable streaming responses
+</ParamField>
+
+### Response Format
+
+Streaming responses return Server-Sent Events (SSE) with the following format:
+
+```json
+data: {"id":"cmpl-0","object":"text_completion.chunk","choices":[{"delta":{"role":"assistant"},"index":0,"finish_reason":null}]}
+
+data: {"id":"cmpl-0","object":"text_completion.chunk","choices":[{"delta":{"content":"The"},"index":0,"finish_reason":null}]}
+
+data: {"id":"cmpl-0","object":"text_completion.chunk","choices":[{"delta":{"content":" capital"},"index":0,"finish_reason":null}]}
+
+data: {"id":"cmpl-0","object":"text_completion.chunk","choices":[{"delta":{},"index":0,"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+## OpenAI Client Compatibility
+
+You can use the official OpenAI Python client to interact with Mini-SGLang:
+
+<CodeGroup>
+
+```python Python (OpenAI SDK)
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:1919/v1",
+    api_key="EMPTY"  # API key not required
+)
+
+response = client.chat.completions.create(
+    model="Qwen/Qwen3-0.6B",
+    messages=[
+        {"role": "user", "content": "Explain quantum computing in simple terms"}
+    ],
+    max_tokens=200,
+    temperature=0.7,
+    stream=True
+)
+
+for chunk in response:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
+```
+
+```python Python (Requests)
+import requests
+import json
+
+url = "http://localhost:1919/v1/chat/completions"
+data = {
+    "model": "Qwen/Qwen3-0.6B",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 100,
+    "stream": True
+}
+
+response = requests.post(url, json=data, stream=True)
+for line in response.iter_lines():
+    if line:
+        line = line.decode('utf-8')
+        if line.startswith('data: '):
+            content = line[6:]
+            if content != '[DONE]':
+                chunk = json.loads(content)
+                delta = chunk['choices'][0]['delta']
+                if 'content' in delta:
+                    print(delta['content'], end='')
+```
+
+```javascript JavaScript (Node.js)
+const response = await fetch('http://localhost:1919/v1/chat/completions', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    model: 'Qwen/Qwen3-0.6B',
+    messages: [{ role: 'user', content: 'Hello!' }],
+    max_tokens: 100,
+    stream: true
+  })
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  
+  const text = decoder.decode(value);
+  console.log(text);
+}
+```
+
+</CodeGroup>
+
+## Server Configuration
+
+### Custom Host and Port
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-0.6B" --host 0.0.0.0 --port 8000
+```
+
+### Using ModelScope
+
+If you have network issues with HuggingFace, use ModelScope as the model source:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-32B" --model-source modelscope
+```
+
+<Tip>
+For production deployments with multiple GPUs, see the [Distributed Serving](/guides/distributed-serving) guide.
+</Tip>

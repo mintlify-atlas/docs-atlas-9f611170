@@ -1,0 +1,409 @@
+---
+title: Tensor Parallelism
+description: Scale LLM inference across multiple GPUs with tensor parallelism
+---
+
+Tensor Parallelism (TP) is a model parallelism technique that splits model weights and computations across multiple GPUs, enabling efficient serving of large models that don't fit on a single GPU.
+
+## Overview
+
+Mini-SGLang supports distributed serving through Tensor Parallelism. By specifying the number of GPUs with the `--tp` flag, you can scale performance and handle larger models across multiple devices.
+
+```bash
+# Single GPU
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+
+# 4 GPUs with Tensor Parallelism
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+
+# 8 GPUs for very large models
+python -m minisgl --model "meta-llama/Llama-3.1-405B-Instruct" --tp 8
+```
+
+<Info>
+Tensor Parallelism is essential for serving large models (70B+ parameters) that exceed single GPU memory capacity. It also provides performance benefits through parallel computation.
+</Info>
+
+## How Tensor Parallelism Works
+
+### Weight Sharding
+
+Model weights are split across GPUs. For linear layers, there are two main patterns:
+
+**Column Parallel**: Split output dimension
+```
+# Original: [hidden_size, output_size]
+# GPU 0: [hidden_size, output_size/tp_size]
+# GPU 1: [hidden_size, output_size/tp_size]
+# GPU 2: [hidden_size, output_size/tp_size]
+# GPU 3: [hidden_size, output_size/tp_size]
+```
+
+**Row Parallel**: Split input dimension
+```
+# Original: [input_size, hidden_size]
+# GPU 0: [input_size/tp_size, hidden_size]
+# GPU 1: [input_size/tp_size, hidden_size]
+# GPU 2: [input_size/tp_size, hidden_size]
+# GPU 3: [input_size/tp_size, hidden_size]
+```
+
+### Communication Patterns
+
+Tensor parallelism requires collective communication between GPUs:
+
+- **All-Reduce**: Sum tensors from all GPUs and distribute result to all GPUs
+- **All-Gather**: Concatenate tensors from all GPUs and distribute to all GPUs
+
+These operations are implemented via NCCL for high-bandwidth GPU-to-GPU communication.
+
+## Architecture
+
+### One Scheduler Per GPU
+
+In a multi-GPU setup, there is one Scheduler Worker for each GPU, referred to as a **TP Rank**:
+
+```
+┌─────────────────────────────────────────────────────┐
+│ API Server (single process)                         │
+└────────────────────┬────────────────────────────────┘
+                     │
+┌────────────────────┴────────────────────────────────┐
+│ Tokenizer (single process)                          │
+└────────────────────┬────────────────────────────────┘
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+┌───────▼────────┐      ┌────────▼────────┐
+│ Scheduler      │      │ Scheduler       │
+│ Rank 0         │◄────►│ Rank 1          │
+│ GPU 0          │ NCCL │ GPU 1           │
+└────────┬───────┘      └────────┬────────┘
+         │                       │
+┌────────▼────────────────────────▼────────┐
+│ Detokenizer (single process)             │
+└──────────────────────────────────────────┘
+```
+
+### Communication Flow
+
+From `/home/daytona/workspace/source/docs/structures.md:20`:
+
+1. **User** sends a request to the **API Server**
+2. **API Server** forwards it to the **Tokenizer**
+3. **Tokenizer** converts text to tokens and sends them to the **Scheduler (Rank 0)**
+4. **Scheduler (Rank 0)** broadcasts the request to all other Schedulers
+5. **All Schedulers** schedule the request and trigger their local **Engine** to compute
+6. **Engines** communicate via NCCL to perform distributed computation
+7. **Scheduler (Rank 0)** collects the output token and sends it to the **Detokenizer**
+8. **Detokenizer** converts the token to text and sends it back to the **API Server**
+9. **API Server** streams the result back to the **User**
+
+<Note>
+Only Rank 0 communicates with the tokenizer and detokenizer. Other ranks receive broadcasts from Rank 0 and participate in distributed computation.
+</Note>
+
+## Implementation
+
+### Distributed Communicator
+
+Mini-SGLang provides a `DistributedCommunicator` abstraction:
+
+```python
+class DistributedCommunicator:
+    plugins: List[DistributedImpl] = [TorchDistributedImpl()]
+    
+    def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
+        return self.plugins[-1].all_reduce(x)
+    
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
+        return self.plugins[-1].all_gather(x)
+```
+
+Two implementations are supported:
+
+### PyTorch Distributed (Default)
+
+```python
+class TorchDistributedImpl(DistributedImpl):
+    def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
+        tp_size = dist.get_world_size()
+        if tp_size == 1:
+            return x
+        dist.all_reduce(x, op=dist.ReduceOp.SUM)
+        return x
+    
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
+        tp_size = dist.get_world_size()
+        if tp_size == 1:
+            return x
+        shape = list(x.shape)
+        shape[0] = shape[0] * tp_size
+        out = torch.empty(shape, dtype=x.dtype, device=x.device)
+        dist.all_gather_into_tensor(out, x)
+        return out
+```
+
+Uses PyTorch's built-in distributed package with NCCL backend.
+
+### PyNCCL (Optional)
+
+```python
+class PyNCCLDistributedImpl(DistributedImpl):
+    comm: PyNCCLCommunicator
+    
+    def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
+        self.comm.all_reduce(x, "sum")
+        return x
+    
+    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
+        world_size = get_tp_info().size
+        output_shape = list(x.shape)
+        output_shape[0] *= world_size
+        result = x.new_empty(output_shape)
+        self.comm.all_gather(result, x)
+        return result
+```
+
+Custom NCCL bindings for potentially better performance:
+
+```python
+def enable_pynccl_distributed(
+    tp_info: DistributedInfo,
+    tp_cpu_group: torch.distributed.ProcessGroup,
+    max_bytes: int
+) -> None:
+    """Enable PyNCCL-based distributed communication for tensor parallelism."""
+    if tp_info.size == 1:
+        return
+    from minisgl.kernel import init_pynccl
+    
+    comm = init_pynccl(
+        tp_rank=tp_info.rank,
+        tp_size=tp_info.size,
+        tp_cpu_group=tp_cpu_group,
+        max_size_bytes=max_bytes,
+    )
+    
+    DistributedCommunicator.plugins.append(PyNCCLDistributedImpl(comm))
+```
+
+## Layer Implementation
+
+Mini-SGLang implements TP-aware layers in `minisgl.layers`:
+
+### Column Parallel Linear
+
+Splits the output dimension:
+
+```python
+class ColumnParallelLinear(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Each GPU computes partial output
+        out = F.linear(x, self.weight, self.bias)
+        # No communication needed if next layer is row parallel
+        return out
+```
+
+Used in:
+- Attention QKV projections (split heads across GPUs)
+- MLP up-projection (split intermediate dimension)
+
+### Row Parallel Linear
+
+Splits the input dimension:
+
+```python
+class RowParallelLinear(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Each GPU computes partial sum
+        partial = F.linear(x, self.weight, None)
+        # All-reduce to get final result
+        output = communicator.all_reduce(partial)
+        if self.bias is not None:
+            output = output + self.bias
+        return output
+```
+
+Used in:
+- Attention output projection (reduce across heads)
+- MLP down-projection (reduce across intermediate)
+
+### Embedding and LM Head
+
+Embeddings and language model heads can also be parallelized:
+
+```python
+class VocabParallelEmbedding(nn.Module):
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        # Each GPU handles a portion of vocabulary
+        local_embeddings = F.embedding(input_ids - self.vocab_start_index, self.weight)
+        # All-reduce to combine results
+        return communicator.all_reduce(local_embeddings)
+```
+
+## Performance Considerations
+
+### Communication Overhead
+
+Tensor parallelism introduces communication overhead:
+
+- **All-reduce**: Required after row-parallel layers
+- **All-gather**: Required for certain operations
+- **Latency**: Network latency between GPUs affects performance
+
+<Tip>
+For best TP performance, use GPUs connected via NVLink or NVSwitch. PCIe connections have higher latency and lower bandwidth, which can bottleneck communication.
+</Tip>
+
+### Scaling Efficiency
+
+TP scaling efficiency depends on:
+
+1. **Model size**: Larger models amortize communication overhead better
+2. **Batch size**: Larger batches improve arithmetic intensity
+3. **Network topology**: NVLink > PCIe for inter-GPU communication
+4. **Sequence length**: Longer sequences increase computation vs. communication ratio
+
+### When to Use TP
+
+**Good use cases:**
+- Model doesn't fit on single GPU (e.g., 70B, 405B parameter models)
+- Low latency requirements (distribute computation)
+- GPUs connected via high-bandwidth interconnect
+
+**Alternatives to consider:**
+- **Pipeline Parallelism**: For models that fit but need more throughput
+- **Quantization**: Reduce memory footprint (e.g., INT8, INT4)
+- **Larger GPU**: Single A100 (80GB) may be better than 2x A100 (40GB)
+
+## Configuration Examples
+
+### Small Model (Testing)
+
+```bash
+# Qwen3-0.6B on 1 GPU (no TP needed)
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+```
+
+### Medium Model
+
+```bash
+# Qwen3-14B on 1 GPU (fits in 24GB)
+python -m minisgl --model "Qwen/Qwen3-14B"
+
+# Or distribute across 2 GPUs for lower latency
+python -m minisgl --model "Qwen/Qwen3-14B" --tp 2
+```
+
+### Large Model
+
+```bash
+# Llama-3.1-70B requires multiple GPUs
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4
+
+# Use 8 GPUs for faster inference
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 8
+```
+
+### Very Large Model
+
+```bash
+# Llama-3.1-405B requires many GPUs
+python -m minisgl --model "meta-llama/Llama-3.1-405B-Instruct" --tp 8
+```
+
+### Custom Port
+
+```bash
+# Specify custom port for API server
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --port 30000
+```
+
+## Benchmark Results
+
+From Mini-SGLang's online inference benchmark:
+
+**Test Configuration:**
+- Hardware: 4x H200 GPU, connected by NVLink
+- Model: Qwen3-32B
+- Dataset: Qwen trace, 1000 requests
+
+```bash
+# Launch with TP=4
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4 --cache naive
+```
+
+<img src="https://lmsys.org/images/blog/minisgl/online.png" alt="Online Benchmark" />
+
+Tensor parallelism enables serving large models with competitive performance.
+
+## Supported Models
+
+Mini-SGLang currently supports TP for:
+
+- **Llama-3** series: Llama-3.1-8B, Llama-3.1-70B, Llama-3.1-405B
+- **Qwen-3** series: Qwen3-0.6B, Qwen3-14B, Qwen3-32B (including MoE variants)
+- **Qwen-2.5** series: All sizes
+
+All dense model architectures in Mini-SGLang support tensor parallelism out of the box.
+
+## Troubleshooting
+
+### NCCL Errors
+
+If you see NCCL errors:
+
+```bash
+# Enable NCCL debugging
+export NCCL_DEBUG=INFO
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4
+```
+
+### GPU Visibility
+
+Ensure all GPUs are visible:
+
+```bash
+# Check available GPUs
+nvidia-smi
+
+# Restrict to specific GPUs
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4
+```
+
+### Out of Memory
+
+If OOM occurs even with TP:
+
+```bash
+# Reduce max prefill length
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --max-prefill-length 4096
+
+# Reduce page size
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 4 --page-size 8
+
+# Increase TP degree
+python -m minisgl --model "meta-llama/Llama-3.1-70B-Instruct" --tp 8
+```
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Learn about the distributed system design
+  </Card>
+  <Card title="Chunked Prefill" icon="scissors" href="/concepts/chunked-prefill">
+    Optimize memory usage in TP deployments
+  </Card>
+  <Card title="Radix Cache" icon="tree" href="/concepts/radix-cache">
+    Efficient KV cache management for TP
+  </Card>
+</CardGroup>
+
+## References
+
+- [Megatron-LM Paper](https://arxiv.org/abs/1909.08053): Original tensor parallelism technique
+- [NCCL Documentation](https://docs.nvidia.com/deeplearning/nccl/): NVIDIA Collective Communications Library
+- [PyTorch Distributed](https://pytorch.org/docs/stable/distributed.html): PyTorch distributed package
